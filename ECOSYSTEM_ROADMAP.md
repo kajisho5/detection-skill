@@ -5,7 +5,7 @@ Written from a read-only audit of this repository on 2026-10-30. Each step below
 
 ## Where it stands
 
-Scaffold: one-line README (titled `# detection`). Engines not listed.
+Scaffold. Engines chosen (ADR-001: YuNet faces, Tesseract OCR, YOLOX objects; all commercial-use, offline, CPU); no code yet.
 
 ## What this repository owns
 
@@ -23,7 +23,7 @@ None. Boxes feed ffmpeg-skill redact / crop / fit and video-editing reframing; f
 
 ## Steps
 
-- [ ] **1. Engine ADR per task** — commercial-use filter, CPU first. To verify: faces YuNet / MediaPipe (InsightFace weights non-commercial); OCR Tesseract / PaddleOCR / RapidOCR; objects YOLOX / RT-DETR (Ultralytics is AGPL)
+- [x] **1. Engine ADR per task** ([docs/decisions.md](docs/decisions.md) ADR-001: YuNet / Tesseract / YOLOX) — commercial-use filter, CPU first. To verify: faces YuNet / MediaPipe (InsightFace weights non-commercial); OCR Tesseract / PaddleOCR / RapidOCR; objects YOLOX / RT-DETR (Ultralytics is AGPL)
   - Done when: ADR; ecosystem.json engines
 - [ ] **2. Skeleton + detection schema + contract/doctor** — frame sampling via ffmpeg-skill look
   - Done when: OS static checks PASS

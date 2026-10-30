@@ -1,0 +1,61 @@
+# Architecture Decision Records
+
+## ADR-001 Engines, one per task: YuNet (faces), Tesseract (OCR), YOLOX (objects)
+
+Checked 2026-10-30 against the upstream repositories listed under Sources.
+
+### Requirements
+
+Detection runs on event and conference footage, mostly to find what must be blurred: faces of attendees who did not consent, name badges, and screens. The engines have to meet these:
+
+- **Commercial use.** The licence allows commercial use of both the code and the weights.
+- **Offline, CPU first.** Weights are local files and a GPU is optional.
+- **Japanese OCR.** OCR covers Japanese, including vertical text, as well as English.
+- **One OCR provider.** stepcap and slide-sync use the same OCR provider. stepcap already runs Tesseract.
+
+### Faces
+
+| Candidate | Licence | Notes | Verdict |
+|---|---|---|---|
+| **YuNet (OpenCV Zoo `face_detection_yunet_2026may.onnx`)** | MIT. "All files in this directory are licensed under MIT License." | Runs through OpenCV's `FaceDetectorYN` on CPU. The 2026may model takes a dynamic input size. Detects faces of about 10 px to 300 px | **Chosen** |
+| MediaPipe BlazeFace | Not verified for this ADR | Pulls in another runtime (mediapipe) | Not now |
+| InsightFace (SCRFD/RetinaFace weights) | Non-commercial (roadmap note) | – | Rejected: licence |
+
+### OCR
+
+| Candidate | Licence | Notes | Verdict |
+|---|---|---|---|
+| **Tesseract 5 + `tessdata_best`** | Apache-2.0. "All data in the repository are licensed under the Apache-2.0 License." | Ships `jpn` and `jpn_vert`. It is a system binary, already used by stepcap | **Chosen.** One OCR provider for detection, slide-sync and stepcap |
+| RapidOCR (PaddleOCR models in ONNX) | Code is Apache-2.0. The models come from PaddleOCR, which RapidOCR says is Apache-2.0; Baidu holds the copyright | Its default languages are Chinese and English. Japanese needs a model from its model list, which was not verified | **Second backend, later.** Accuracy on Japanese screen text may beat Tesseract; measure before switching |
+
+### Objects
+
+| Candidate | Licence | Notes | Verdict |
+|---|---|---|---|
+| **YOLOX (Megvii)** | Apache-2.0 | The repo has an ONNX export and an ONNXRuntime demo, and publishes COCO weights in its GitHub Releases | **Chosen** |
+| RT-DETR / RT-DETRv2 | Code is Apache-2.0. The licence of the weights is not stated on the repo page | – | Not now. Revisit if the weight licence is confirmed |
+| Ultralytics YOLO | AGPL-3.0 (roadmap note) | – | Rejected: licence |
+
+### Decision
+
+- **Engines and runtimes.**
+  - Faces: YuNet through `opencv-python-headless`.
+  - OCR: the `tesseract` binary with `jpn`, `jpn_vert` and `eng` from `tessdata_best`.
+  - Objects: YOLOX through `onnxruntime`.
+  - Each engine is optional. `doctor` reports a missing engine or model file with its install line, and an op whose engine is missing exits 3.
+- **Model files.** Model files live in a directory the user points to. YuNet and YOLOX ONNX files are named with their sha256. Nothing is downloaded at run time.
+- **Frames.** Frames come from ffmpeg-skill (`look` at sample points, or `scenes` for change points). The skill does not decode video itself.
+- **Output.** Boxes are measured facts: the frame time, the box, the score, the engine and the model hash. Linking boxes into tracks (step 6) is a separate, documented heuristic. A face box is never an identity.
+
+### Follow-ups
+
+- **RapidOCR backend.** Add it after a Japanese CER comparison against Tesseract on rendered slides.
+- **RT-DETR.** Reconsider it if its weight licence is confirmed.
+
+### Sources
+
+- [OpenCV Zoo: face_detection_yunet](https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet)
+- [tesseract-ocr/tessdata_best](https://github.com/tesseract-ocr/tessdata_best)
+- [RapidAI/RapidOCR](https://github.com/RapidAI/RapidOCR)
+- [Megvii-BaseDetection/YOLOX](https://github.com/Megvii-BaseDetection/YOLOX)
+- [lyuwenyu/RT-DETR](https://github.com/lyuwenyu/RT-DETR)
