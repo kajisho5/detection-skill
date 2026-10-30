@@ -5,7 +5,7 @@ Written from a read-only audit of this repository on 2026-10-30. Each step below
 
 ## Where it stands
 
-Scaffold. Engines chosen (ADR-001: YuNet faces, Tesseract OCR, YOLOX objects; all commercial-use, offline, CPU); no code yet.
+Early (0.1.0). FACES (YuNet), TEXT (Tesseract, ja/en, vertical) and OBJECTS (YOLOX) write `detection-skill/detections@1` from ffmpeg-skill frames or an image; TRACKS links boxes into redact-ready rectangles (a heuristic). Contract and doctor in the OS shape. Measured on synthetic fixtures only; real event footage is not measured yet.
 
 ## What this repository owns
 
@@ -13,29 +13,29 @@ Scaffold. Engines chosen (ADR-001: YuNet faces, Tesseract OCR, YOLOX objects; al
 
 | Owned job | Status | Note |
 |---|---|---|
-| 顔検出 | missing |  |
-| 文字検出(OCR) | missing | stepcap already runs OCR; slide-sync needs it -- one provider for all |
-| 物体検出 | missing |  |
+| 顔検出 | partial | `detection faces` (0.1.0, YuNet); fixture recall 5/5, real footage unmeasured |
+| 文字検出(OCR) | partial | `detection text` (0.1.0, Tesseract jpn/jpn_vert/eng; images accepted for slide-sync / stepcap); stepcap and slide-sync not wired yet |
+| 物体検出 | partial | `detection objects` (0.1.0, YOLOX ONNX, COCO 80) |
 
 ## Wiring
 
-None. Boxes feed ffmpeg-skill redact / crop / fit and video-editing reframing; frames come from ffmpeg-skill look, sample points from scenes.
+Frames come from ffmpeg-skill `probe` / `scenes` / `look --no-timecode --width <source>` (dependency `>=2.0.0 <3.0.0`). `detection tracks` writes even-pixel rectangles with time spans in ffmpeg-skill `redact`'s `--x --y --width --height` convention; the agent-side plan (detection -> cut -> redact) is step 7. Not wired yet: video-editing reframing, slide-sync / stepcap OCR.
 
 ## Steps
 
 - [x] **1. Engine ADR per task** ([docs/decisions.md](docs/decisions.md) ADR-001: YuNet / Tesseract / YOLOX) — commercial-use filter, CPU first. To verify: faces YuNet / MediaPipe (InsightFace weights non-commercial); OCR Tesseract / PaddleOCR / RapidOCR; objects YOLOX / RT-DETR (Ultralytics is AGPL)
   - Done when: ADR; ecosystem.json engines
-- [ ] **2. Skeleton + detection schema + contract/doctor** — frame sampling via ffmpeg-skill look
+- [x] **2. Skeleton + detection schema + contract/doctor** — frame sampling via ffmpeg-skill look (0.1.0: `schemas/detections.schema.json`, `detection contract` / `doctor` / `check`; publishes_contract, lifecycle_declared, dependency_version_ranges, no_unsafe_shell_out and doctor_status PASS in `tests/`)
   - Done when: OS static checks PASS
-- [ ] **3. FACES op**
+- [x] **3. FACES op** (0.1.0: YuNet 2026may; 5 faces of 23-276 px in one frame, recall 5/5 at IoU 0.5)
   - Done when: fixture recall
-- [ ] **4. TEXT (OCR) op, ja/en**
+- [x] **4. TEXT (OCR) op, ja/en** (0.1.0: rendered slide text CER ja 0.019 apt tessdata / 0.057 tessdata_best, en 0.000, vertical ja 0.000; limits 0.10 / 0.05 in `tests/`)
   - Done when: CER threshold on rendered text
-- [ ] **5. OBJECTS op**
+- [x] **5. OBJECTS op** (0.1.0: YOLOX-Nano; person / cat / cup fixtures 3/3 at IoU 0.5)
   - Done when: fixture
-- [ ] **6. Tracks** — link boxes over time into redact-ready rectangles
+- [x] **6. Tracks** — link boxes over time into redact-ready rectangles (0.1.0: `detection tracks`, greedy IoU, documented heuristic; a real face moving 60 px/s sampled every 0.2 s keeps one id)
   - Done when: stable ids on a moving box
-- [ ] **7. SKILL.md, CI; (agent side) blur faces -> redact**
+- [ ] **7. SKILL.md, CI; (agent side) blur faces -> redact** (SKILL.md and CI are in 0.1.0; the agent-side plan is pending)
   - Done when: plan: detection -> ffmpeg-skill/redact
 
 ---
