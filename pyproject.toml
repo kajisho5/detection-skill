@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "detection-skill"
+version = "0.1.0"
+description = "Faces, text (OCR, ja/en) and objects as measured boxes in time, from frames ffmpeg-skill extracts: YuNet, Tesseract, YOLOX; local, offline, CPU."
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.9"
+authors = [{name = "kajisho5"}]
+keywords = ["face-detection", "ocr", "object-detection", "yunet", "tesseract", "yolox", "redaction", "offline", "agent-skill", "video-production"]
+dependencies = []
+
+[project.optional-dependencies]
+# Each engine is optional (ADR-001). Model files are never downloaded by the skill: see README.
+faces = ["opencv-python-headless>=4.8", "numpy"]
+# OCR needs no Python package: it runs the `tesseract` binary (apt/brew/choco) with jpn, jpn_vert and eng traineddata.
+text = []
+objects = ["onnxruntime>=1.16", "opencv-python-headless>=4.8", "numpy"]
+all = ["opencv-python-headless>=4.8", "onnxruntime>=1.16", "numpy"]
+
+[project.scripts]
+detection = "detection_skill.cli:main"
+
+[project.urls]
+Repository = "https://github.com/kajisho5/detection-skill"
+
+[tool.setuptools.packages.find]
+where = ["src"]
