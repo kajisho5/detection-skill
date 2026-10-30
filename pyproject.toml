@@ -14,12 +14,12 @@ keywords = ["face-detection", "ocr", "object-detection", "yunet", "tesseract", "
 dependencies = []
 
 [project.optional-dependencies]
-# Each engine is optional (ADR-001). Model files are never downloaded by the skill: see README.
-faces = ["opencv-python-headless>=4.8", "numpy"]
+# Each engine is optional (ADR-001). Floors clear every published advisory (ADR-002). Model files are never downloaded by the skill: see README.
+faces = ["opencv-python-headless>=4.8.1.78", "numpy>=1.22"]
 # OCR needs no Python package: it runs the `tesseract` binary (apt/brew/choco) with jpn, jpn_vert and eng traineddata.
 text = []
-objects = ["onnxruntime>=1.16", "opencv-python-headless>=4.8", "numpy"]
-all = ["opencv-python-headless>=4.8", "onnxruntime>=1.16", "numpy"]
+objects = ["onnxruntime>=1.16", "opencv-python-headless>=4.8.1.78", "numpy>=1.22"]
+all = ["opencv-python-headless>=4.8.1.78", "onnxruntime>=1.16", "numpy>=1.22"]
 
 [project.scripts]
 detection = "detection_skill.cli:main"

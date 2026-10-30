@@ -59,3 +59,23 @@ Detection runs on event and conference footage, mostly to find what must be blur
 - [RapidAI/RapidOCR](https://github.com/RapidAI/RapidOCR)
 - [Megvii-BaseDetection/YOLOX](https://github.com/Megvii-BaseDetection/YOLOX)
 - [lyuwenyu/RT-DETR](https://github.com/lyuwenyu/RT-DETR)
+
+## ADR-002 Dependency floors clear every published advisory
+
+### Context
+
+A supply-chain audit (Trail of Bits supply-chain-risk-auditor, checked against OSV on 2026-10-30) found two floors that allowed vulnerable releases:
+
+- `opencv-python-headless>=4.8` allowed 4.8.0.74, whose wheels bundle a libwebp with the heap overflow CVE-2023-4863 (GHSA-jh2j-j4j9-crg3, HIGH; PYSEC-2023-184). The faces and objects engines decode the frames and images this skill is given through OpenCV.
+- `numpy` had no floor at all, so any release could satisfy it, including ones before 1.22.0 with known advisories (e.g. GHSA-fpfv-jqm9-f5jm on 1.21.x).
+
+### Decision
+
+- `opencv-python-headless>=4.8.1.78`, the first wheel with a fixed libwebp.
+- `numpy>=1.22`. 1.22.0 has no published advisory.
+- Both support Python 3.9, the oldest version this skill declares and tests, so no environment marker is needed.
+
+### Consequences
+
+Pip already installs newer releases than either floor; the change only stops an old environment from satisfying the extras. onnxruntime's floor (`>=1.16`) had no advisory in the audit and is unchanged.
+
