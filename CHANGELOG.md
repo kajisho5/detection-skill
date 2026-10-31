@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Accept ffmpeg-skill 3.x: the dependency range is `>=2.0.0 <4.0.0` (contract, `detection doctor`, frame extraction). The tools used (`probe`, `scenes`, `look`) did not change in 3.0.0; its `cut.py` changes do not reach this skill (ADR-002).
+- ffmpeg-skill 3.x needs Python 3.10+, and its scripts run under this skill's interpreter, so on Python 3.9 a 3.x checkout is refused with `FFMPEG_SKILL_NOT_FOUND` ("needs Python 3.10 or later") and `doctor` reports it `INCOMPATIBLE` with the fix. This skill itself keeps Python 3.9 with an ffmpeg-skill 2.x checkout.
+- CI: the integration job runs against ffmpeg-skill `v2.24.1` and `v3.0.0` (tags, not `main`).
+
 ## 0.1.0 - 2026-10-30
 
 First release (roadmap steps 2-6).

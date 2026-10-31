@@ -7,7 +7,7 @@ from typing import Any, Dict, List
 from . import __version__
 from .detections import DETECTIONS_SCHEMA
 from .engines import DEFAULT_ENGINE, engine_ids
-from .frames import ENV_DIRS, REQUIRED_TOOLS
+from .frames import ENV_DIRS, REQUIRED_TOOLS, VERSION_RANGE
 from .models import ENV_MODELS_DIR, ENV_TESSDATA_DIR, FACE_MODEL_DEFAULT, KNOWN_MODELS, KNOWN_TESSDATA
 from .service import DEFAULT_EVERY, DEFAULT_MAX_FRAMES, DEFAULT_MIN_SCORE, DEFAULT_TIMEOUT
 from .tracks import METHOD, TRACKS_SCHEMA
@@ -73,7 +73,7 @@ def contract() -> Dict[str, Any]:
                      {"id": "vision.detect_objects", "lifecycle": "EXPERIMENTAL", "tool_id": "detection/objects"},
                      {"id": "vision.track_boxes", "lifecycle": "EXPERIMENTAL", "tool_id": "detection/tracks"}],
         "dependencies": [
-            {"id": "ffmpeg-skill", "kind": "skill", "required": True, "version_range": ">=2.0.0 <3.0.0",
+            {"id": "ffmpeg-skill", "kind": "skill", "required": True, "version_range": VERSION_RANGE,
              "for": ["detection/faces", "detection/text", "detection/objects"], "only_for": "video input (an image needs none)",
              "tools": list(REQUIRED_TOOLS), "located_by": ["--ffmpeg-skill"] + [f"${e}" for e in ENV_DIRS]
              + ["~/.claude/skills/ffmpeg-skill", "./vendor/ffmpeg-skill", "../ffmpeg-skill"]},
