@@ -19,7 +19,7 @@ Early (0.1.0). FACES (YuNet), TEXT (Tesseract, ja/en, vertical) and OBJECTS (YOL
 
 ## Wiring
 
-Frames come from ffmpeg-skill `probe` / `scenes` / `look --no-timecode --width <source>` (dependency `>=2.0.0 <3.0.0`). `detection tracks` writes even-pixel rectangles with time spans in ffmpeg-skill `redact`'s `--x --y --width --height` convention; the agent-side plan (detection -> cut -> redact) is step 7. Not wired yet: video-editing reframing, slide-sync / stepcap OCR.
+Frames come from ffmpeg-skill `probe` / `scenes` / `look --no-timecode --width <source>` (dependency `>=2.0.0 <4.0.0`: 3.x accepted since [#7](https://github.com/kajisho5/detection-skill/pull/7), see ADR-002). `detection tracks` writes even-pixel rectangles with time spans in ffmpeg-skill `redact`'s `--x --y --width --height` convention; the agent-side plan (detection -> cut -> redact) is step 7. Not wired yet: video-editing reframing, slide-sync / stepcap OCR.
 
 ## Steps
 

@@ -45,6 +45,7 @@ from detection_skill.engines.base import EngineRequest  # noqa: E402
 from detection_skill.engines.boxes import iou, nms, union  # noqa: E402
 from detection_skill.engines.tesseract_engine import group, join_words, parse_tsv, resolve_langs  # noqa: E402
 from detection_skill.errors import DetectionError  # noqa: E402
+from detection_skill import frames  # noqa: E402
 from detection_skill.frames import last_time, plan_at, plan_every  # noqa: E402
 from detection_skill.metrics import cer, match_boxes  # noqa: E402
 from detection_skill.models import KNOWN_MODELS, find_tesseract, inspect_models, tessdata_dir, tessdata_langs  # noqa: E402
@@ -304,12 +305,39 @@ class ServiceTests(TmpCase):
         with self.assertRaises(DetectionError) as cm:
             detect("face", video, engine=ScriptedEngine("face"), ffmpeg_skill=os.path.join(self.tmp, "nope"))
         self.assertEqual((cm.exception.code, ERRORS[cm.exception.code]["exit_code"]), ("FFMPEG_SKILL_NOT_FOUND", 3))
+        for major in ("1", "4"):
+            other = os.path.join(self.tmp, f"ffmpeg-skill-{major}")
+            shutil.copytree(FAKE_FFMPEG_SKILL, other)
+            Path(other, "package.json").write_text(f'{{"version": "{major}.0.0"}}', encoding="utf-8")
+            with self.assertRaises(DetectionError) as cm:
+                detect("face", video, engine=ScriptedEngine("face"), ffmpeg_skill=other)
+            self.assertEqual(cm.exception.code, "FFMPEG_SKILL_NOT_FOUND")
+            self.assertIn(">=2.0.0 <4.0.0", cm.exception.message)
+            self.assertEqual(doctor(ffmpeg_skill=other)["checks"]["ffmpeg_skill"]["status"], "INCOMPATIBLE")
+
+    def test_ffmpeg_skill_3x_is_accepted_and_needs_python_3_10(self):
+        video = fake_video(self.tmp)
         v3 = os.path.join(self.tmp, "ffmpeg-skill-3")
         shutil.copytree(FAKE_FFMPEG_SKILL, v3)
         Path(v3, "package.json").write_text('{"version": "3.0.0"}', encoding="utf-8")
-        with self.assertRaises(DetectionError) as cm:
-            detect("face", video, engine=ScriptedEngine("face"), ffmpeg_skill=v3)
-        self.assertEqual(cm.exception.code, "FFMPEG_SKILL_NOT_FOUND")
+        skill = frames.locate(v3)
+        self.assertIsNone(frames.python_floor(skill, (3, 10)))
+        self.assertIsNone(frames.python_floor(skill, (3, 12, 1)))
+        self.assertEqual(frames.python_floor(skill, (3, 9)), "3.10")
+        self.assertIsNone(frames.python_floor(frames.locate(FAKE_FFMPEG_SKILL), (3, 9)))  # 2.x keeps Python 3.9
+        if sys.version_info >= (3, 10):
+            doc = detect("face", video, engine=ScriptedEngine("face"), ffmpeg_skill=v3)
+            self.assertEqual(doc["sampling"]["ffmpeg_skill_version"], "3.0.0")
+            self.assertTrue(validate_detections(doc).ok)
+            self.assertEqual(doctor(ffmpeg_skill=v3)["checks"]["ffmpeg_skill"]["status"], "OK")
+        else:
+            with self.assertRaises(DetectionError) as cm:
+                detect("face", video, engine=ScriptedEngine("face"), ffmpeg_skill=v3)
+            self.assertEqual(cm.exception.code, "FFMPEG_SKILL_NOT_FOUND")
+            self.assertIn("Python 3.10", cm.exception.message)
+            check = doctor(ffmpeg_skill=v3)["checks"]["ffmpeg_skill"]
+            self.assertEqual(check["status"], "INCOMPATIBLE")
+            self.assertIn("ffmpeg-skill 2.x", check["install"])
 
     def test_engine_timeout_and_failure(self):
         img = os.path.join(self.tmp, "a.png")
@@ -546,7 +574,7 @@ class ContractTests(unittest.TestCase):
         for d in c["dependencies"]:
             self.assertIn("version_range", d)
         ff = next(d for d in c["dependencies"] if d["id"] == "ffmpeg-skill")
-        self.assertEqual(ff["version_range"], ">=2.0.0 <3.0.0")
+        self.assertEqual(ff["version_range"], ">=2.0.0 <4.0.0")
         self.assertFalse(c["execution"]["network"])
         self.assertEqual({e["exit_code"] for e in ERRORS.values()}, {2, 3, 4})
         self.assertIn("face_detection_yunet_2026may.onnx", c["engines"]["known_model_sha256"].values())
@@ -603,7 +631,9 @@ class RealFramesTests(TmpCase):
         self.assertEqual(doc["sampling"]["times"], [0.0, 1.0, 2.0])
         self.assertEqual(doc["sampling"]["extracted_size"], {"width": 1920, "height": 1080})
         self.assertEqual(doc["frames"][0]["detections"][0]["box"], [1870.0, 1030.0, 50.0, 50.0])  # clipped at the edge
-        self.assertEqual(doc["sampling"]["ffmpeg_skill_version"].split(".")[0], "2")
+        real_version = json.loads(Path(FFMPEG_SKILL_DIR, "package.json").read_text(encoding="utf-8"))["version"]
+        self.assertEqual(doc["sampling"]["ffmpeg_skill_version"], real_version)
+        self.assertIn(real_version.split(".")[0], ("2", "3"))
         self.assertTrue(validate_detections(doc).ok)
         doc = detect("face", video, scenes=True, engine=eng, ffmpeg_skill=str(FFMPEG_SKILL_DIR))
         self.assertEqual(doc["sampling"]["method"], "scenes")

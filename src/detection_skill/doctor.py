@@ -8,7 +8,7 @@ import sys
 from typing import Any, Dict, Optional
 
 from . import __version__
-from .frames import SUPPORTED_MAJOR, engine_doctor, locate
+from .frames import SUPPORTED_MAJORS, VERSION_RANGE, engine_doctor, locate, python_floor
 from .models import (ENV_MODELS_DIR, ENV_TESSDATA_DIR, REQUIRED_LANGS, describe_traineddata, find_tesseract, inspect_models,
                      resolve_models_dir, tessdata_dir, tessdata_langs, tesseract_version)
 
@@ -54,13 +54,15 @@ def doctor(models_dir: Optional[str] = None, tessdata: Optional[str] = None, ffm
                                   "install": "git clone https://github.com/kajisho5/ffmpeg-skill ~/.claude/skills/ffmpeg-skill "
                                              "(or pass --ffmpeg-skill / set $DETECTION_FFMPEG_SKILL_DIR)"}
     else:
-        compatible = skill.major == SUPPORTED_MAJOR
+        floor = python_floor(skill)
+        compatible = skill.major in SUPPORTED_MAJORS and floor is None
         ed = engine_doctor(skill) if compatible else {"ok": False, "ffmpeg": None, "tools": {}}
         status = "INCOMPATIBLE" if not compatible else ("OK" if ed["ok"] else "INCOMPLETE")
-        checks["ffmpeg_skill"] = {"status": status, "version": skill.version, "required": ">=2.0.0 <3.0.0", "ffmpeg": ed.get("ffmpeg"),
+        checks["ffmpeg_skill"] = {"status": status, "version": skill.version, "required": VERSION_RANGE, "ffmpeg": ed.get("ffmpeg"),
                                   "tools": ed.get("tools"), "used_for": "frames of a video (probe, scenes, look)",
                                   "install": None if status == "OK" else
-                                  "ffmpeg-skill 2.x with a working ffmpeg (run its `python3 scripts/_contract.py doctor`)"}
+                                  (f"ffmpeg-skill {skill.version} needs Python {floor}+: run under Python 3.10+, or use ffmpeg-skill 2.x"
+                                   if floor else "ffmpeg-skill 2.x or 3.x with a working ffmpeg (run its `python3 scripts/_contract.py doctor`)")}
 
     cv2 = _pkg("cv2", "opencv-python-headless")
     checks["opencv"] = dict(cv2, used_for="faces (YuNet), image decoding for objects",

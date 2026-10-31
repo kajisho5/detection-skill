@@ -79,3 +79,18 @@ A supply-chain audit (Trail of Bits supply-chain-risk-auditor, checked against O
 
 Pip already installs newer releases than either floor; the change only stops an old environment from satisfying the extras. onnxruntime's floor (`>=1.16`) had no advisory in the audit and is unchanged.
 
+
+## ADR-002 ffmpeg-skill 3.x accepted (`>=2.0.0 <4.0.0`)
+
+Checked 2026-10-31 against ffmpeg-skill v3.0.0 (CHANGELOG "3.0.0", `docs/contract.md` "What 3.0 changed", `contract --json` `removed`).
+
+### Context
+
+ffmpeg-skill 3.0.0 removed Python 3.9 and FFmpeg 5.x, changed `cut.py`'s defaults and the meaning of its `precision` / `keyframe_snapped`, and added `probe`'s `timecode`. `contract_version` stays 2.0 and no tool, argument or JSON key was removed. This skill uses `probe` (duration, size, video stream), `scenes` and `look --at --no-timecode --width`; it never calls `cut`.
+
+### Decision
+
+- **Range `>=2.0.0 <4.0.0`.** Nothing this skill reads changed in 3.0.0, so 3.x is accepted unchanged, with no 2.x compatibility flags (there is no `cut` call to pass them to). `frames.SUPPORTED_MAJORS = (2, 3)` and `frames.VERSION_RANGE` are the one source for the contract, `doctor` and frame extraction.
+- **Python 3.9 stays, with ffmpeg-skill 2.x.** ffmpeg-skill's scripts run under this skill's own interpreter (`sys.executable`), and 3.x requires Python 3.10. On Python 3.9 a 3.x checkout is refused before any frame is extracted (`FFMPEG_SKILL_NOT_FOUND`, exit 3, naming both fixes) and `doctor` reports it `INCOMPATIBLE`. `requires-python` stays `>=3.9`: images need no ffmpeg-skill at all, and ffmpeg-skill 2.x still runs on 3.9.
+- **An FFmpeg older than 6.1** is refused by ffmpeg-skill 3.x itself (`missing_tool`, `ffmpeg_unsupported`); it surfaces here as `FRAME_EXTRACTION_FAILED` with ffmpeg-skill's message, and `doctor` as `INCOMPLETE` (ffmpeg-skill's own doctor says `ok: false`).
+- **CI** runs the integration job (every real engine, no skips) against the tags `v2.24.1` and `v3.0.0`, so both ends of the range are exercised; the unit jobs keep Python 3.9 / 3.12 on the fake ffmpeg-skill.

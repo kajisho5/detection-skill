@@ -22,7 +22,11 @@ from .errors import DetectionError
 
 ENV_DIRS = ("DETECTION_FFMPEG_SKILL_DIR", "FFMPEG_SKILL_DIR")
 REQUIRED_TOOLS = ("probe", "look", "scenes")
-SUPPORTED_MAJOR = 2  # version_range ">=2.0.0 <3.0.0"
+SUPPORTED_MAJORS = (2, 3)
+VERSION_RANGE = ">=2.0.0 <4.0.0"
+# ffmpeg-skill 3.0.0 dropped Python 3.9: its scripts run under this interpreter (sys.executable), so a 3.x
+# checkout needs Python 3.10+ here too. On Python 3.9, use an ffmpeg-skill 2.x checkout (ADR-002).
+PYTHON_FLOOR_BY_MAJOR = {3: (3, 10)}
 IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp")
 LOOK_BATCH = 40
 TIME_DIGITS = 3
@@ -87,12 +91,24 @@ def require(explicit: Optional[str] = None) -> FfmpegSkill:
     if skill is None:
         raise DetectionError("FFMPEG_SKILL_NOT_FOUND", "ffmpeg-skill not found (frames of a video come from its look/scenes)",
                              "pass --ffmpeg-skill DIR or set $DETECTION_FFMPEG_SKILL_DIR; see `detection doctor`")
-    if skill.major != SUPPORTED_MAJOR:
-        raise DetectionError("FFMPEG_SKILL_NOT_FOUND", f"ffmpeg-skill {skill.version} is outside >=2.0.0 <3.0.0")
+    if skill.major not in SUPPORTED_MAJORS:
+        raise DetectionError("FFMPEG_SKILL_NOT_FOUND", f"ffmpeg-skill {skill.version} is outside {VERSION_RANGE}")
+    floor = python_floor(skill)
+    if floor:
+        raise DetectionError("FFMPEG_SKILL_NOT_FOUND",
+                             f"ffmpeg-skill {skill.version} needs Python {floor} or later (this is {sys.version.split()[0]})",
+                             "run detection under Python 3.10+, or use an ffmpeg-skill 2.x checkout on Python 3.9")
     missing = [t for t in REQUIRED_TOOLS if t not in skill.tools]
     if missing:
         raise DetectionError("FFMPEG_SKILL_NOT_FOUND", f"ffmpeg-skill {skill.version} lacks tool(s): {', '.join(missing)}")
     return skill
+
+
+def python_floor(skill: FfmpegSkill, version_info: Optional[Tuple[int, ...]] = None) -> Optional[str]:
+    """The Python version this ffmpeg-skill major needs when the running interpreter is older, else None."""
+    floor = PYTHON_FLOOR_BY_MAJOR.get(skill.major) if skill.major is not None else None
+    vi = tuple(version_info if version_info is not None else sys.version_info)[:2]
+    return ".".join(map(str, floor)) if floor and vi < floor else None
 
 
 def subprocess_runner(argv: List[str], timeout: float) -> Tuple[int, str, str]:
