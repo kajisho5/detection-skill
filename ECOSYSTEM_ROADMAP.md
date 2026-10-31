@@ -35,7 +35,7 @@ Frames come from ffmpeg-skill `probe` / `scenes` / `look --no-timecode --width <
   - Done when: fixture
 - [x] **6. Tracks** — link boxes over time into redact-ready rectangles (0.1.0: `detection tracks`, greedy IoU, documented heuristic; a real face moving 60 px/s sampled every 0.2 s keeps one id)
   - Done when: stable ids on a moving box
-- [ ] **7. SKILL.md, CI; (agent side) blur faces -> redact** (SKILL.md and CI are in 0.1.0; the agent-side plan is pending)
+- [ ] **7. SKILL.md, CI; (agent side) blur faces -> redact** (skill side done in 0.1.0, checked in [#6](https://github.com/kajisho5/detection-skill/pull/6): `SKILL.md` documents every CLI command (`faces`, `text`, `objects`, `tracks`, `check`, `contract`, `doctor`) and the detection -> ffmpeg-skill `redact` recipe; `.github/workflows/tests.yml` (unit: Linux / macOS / Windows x Python 3.9 / 3.12 plus `detection contract --json`; integration: every real engine (YuNet, Tesseract jpn / jpn_vert / eng, YOLOX-Nano, models pinned by sha256) + ffmpeg-skill + the OS checkout, no test may skip, `doctor`); the OS checkout now names `kajisho5/Velisa`. The agent-side plan is pending in video-production-agent)
   - Done when: plan: detection -> ffmpeg-skill/redact
 
 ---
