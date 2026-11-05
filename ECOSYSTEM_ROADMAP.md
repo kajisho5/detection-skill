@@ -42,6 +42,16 @@ Frames come from ffmpeg-skill `probe` / `scenes` / `look --no-timecode --width <
 - [ ] **9. Subject path for reframing** — a crop window per time for a target aspect (9:16, 1:1, 4:5): from `faces` and `tracks` (and `objects` when asked), choose the subject, smooth its centre (a dead zone, a speed limit, no jump inside a shot; a cut is allowed at a shot boundary from step 8), keep the window inside the frame, and write `detection-skill/reframe@1` (windows at the sample times, the subject id, the reason for each switch). Applying the path belongs to video-editing (尺・画角合わせ) and the engine: ffmpeg-skill has no time-varying crop yet (proposal in Velisa ROADMAP), so until it does the consumer takes one window per shot. 参考：OpenChatCut（考え方のみ。コードは使わない）
   - Needs: step 6; step 8 for shot-bounded switches
   - Done when: a fixture with a speaker walking across the frame keeps the face inside the window in every sampled frame, with no window jump larger than the speed limit inside a shot
+- [ ] **10. Active speaker for multicam switching** — for each time range, which face is speaking (face tracks plus mouth motion, or diarization-skill turns matched to faces) and which camera shows it best (face size, frontalness, sharpness); the result is a switch list for ffmpeg-skill `multicam`. Field review 2026-11-05 (Velisa ROADMAP, third round)
+  - なぜ要るか：パネルや対談のマルチカムを、話している人に自動で切り替えられる
+  - Needs: step 6 (tracks); diarization-skill turns when present
+  - Done when: a two-camera fixture with alternating speakers gives a switch list matching the turns within 0.5 s
+- [ ] **11. Personal and patient data in slides and frames** — PII: OCR text checked for names, patient ids, dates of birth, phone numbers and addresses (patterns stated per locale) and faces in clinical photos, written as redact-ready rectangles with the reason; every region a proposal (CONFIRM), none removed silently
+  - なぜ要るか：医学系の発表スライドに残った患者情報を、公開前に見落とさない
+  - Done when: a slide fixture with a patient id and a date of birth gives both regions; a slide with none gives none
+- [ ] **12. Face attributes for frame choice** — per face: size, frontal angle (from YuNet's five landmarks), blur, and eyes open as a measured value (edge contrast in the eye regions around the landmarks; a heuristic, documented as such), for thumbnail-skill and take selection
+  - なぜ要るか：サムネイルや代表カットに、目をつぶった顔やぶれたコマを選ばない
+  - Done when: a fixture with open and closed eyes is ranked correctly
 
 ---
 Engine for every media operation: [ffmpeg-skill](https://github.com/kajisho5/ffmpeg-skill) (3.x, 42 tools, contract_version 2.0; treated as complete, proposals go to Velisa's ROADMAP). Orchestrator: [video-production-agent](https://github.com/kajisho5/video-production-agent).
