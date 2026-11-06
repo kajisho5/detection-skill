@@ -1,6 +1,6 @@
 ---
 name: detection-skill
-description: Find faces, text (OCR, Japanese and English, including vertical Japanese) and objects in a video's frames or in an image, as measured boxes with time, pixel box, score and model hash, link them over time into redact-ready rectangles, measure shot boundaries (cuts and dissolves) over every frame, turn face tracks into a reframing path for 9:16, 1:1 or 4:5, and say who is speaking and which camera shows them best as a multicam switch list. Use when asked to find (and then blur) faces, name badges, screens or other things in event footage, read text on slides, screenshots or signs, check where people or objects are in a shot, list a video's shots and cuts, plan a vertical / square reframe that follows the speaker, or cut a multicam panel or interview to whoever is talking. Local and offline (YuNet, Tesseract, YOLOX, PySceneDetect on CPU); frames come from ffmpeg-skill. It never identifies anyone.
+description: Find faces, text (OCR, Japanese and English, including vertical Japanese) and objects in a video's frames or in an image, as measured boxes with time, pixel box, score and model hash, link them over time into redact-ready rectangles, measure shot boundaries (cuts and dissolves) over every frame, turn face tracks into a reframing path for 9:16, 1:1 or 4:5, say who is speaking and which camera shows them best as a multicam switch list, and flag personal and patient data (ids, dates of birth, names, phones, addresses, faces) on slides for a person to confirm before it is blurred. Use when asked to find (and then blur) faces, name badges, screens or other things in event footage, read text on slides, screenshots or signs, check where people or objects are in a shot, list a video's shots and cuts, plan a vertical / square reframe that follows the speaker, cut a multicam panel or interview to whoever is talking, or check slides for patient data before publishing. Local and offline (YuNet, Tesseract, YOLOX, PySceneDetect on CPU); frames come from ffmpeg-skill. It never identifies anyone.
 ---
 
 # detection-skill
@@ -20,6 +20,7 @@ Run `detection <command> ... --json` (installed by `pip install -e .`; engines b
 | Crop window that follows the speaker | `detection reframe tracks.json --aspect 9:16 --shots shots.json -o reframe.json --json` |
 | Faces with size, pose, sharpness, mouth contrast | `detection faces camA.mp4 --every 0.12 --attributes -o a.json --json` |
 | Multicam: switch to whoever speaks | `detection speakers --camera a_tracks.json --camera b_tracks.json [--turns turns.json] [--offsets 0,0.42] -o speakers.json --json` |
+| Patient / personal data on slides | `detection pii text.json [--faces faces.json] [--locale intl,ja-JP] -o pii.json --json` |
 | Check a file | `detection check faces.json --json` |
 | What this skill declares / needs | `detection contract --json`, `detection doctor --json` |
 
@@ -34,6 +35,8 @@ Model files: `--models-dir` or `DETECTION_MODELS_DIR` (YuNet `face_detection_yun
 
 - **Multicam to the speaker**: per camera `faces --every 0.12 --attributes` -> `tracks`; then `speakers --camera cam0 --camera cam1 ...` in ffmpeg-skill `multicam`'s input order, `--offsets` from `multicam --offsets-only --json` (`offsets_seconds`), and `--turns` from diarization-skill when it is installed (the switch then follows the turns). Hand `switch` to `multicam --switch`. This skill cuts nothing.
 
+- **Personal and patient data** before publishing a medical or case talk: `text` (line level; `--lang eng`, or `jpn+eng` for Japanese slides) on the slide images or frames, `faces` for clinical photos, then `pii text.json --faces faces.json` with the locales of the material (`intl` default; add `en-US`, `en-GB` or `ja-JP`). Show every region (`excerpt`, `reason`) to a person; only the confirmed `redact[]` spans go to ffmpeg-skill `redact`.
+
 ## Report it honestly
 
 - **A face box is not a person.** Say "a face was detected at 12.0 s", never who it is. `label` is always null for faces and the skill has no recognition. Track ids (`track_001`) are not identities either: they say boxes overlapped from one sample to the next; two people crossing can swap ids, and a person leaving and returning gets a new id.
@@ -42,6 +45,7 @@ Model files: `--models-dir` or `DETECTION_MODELS_DIR` (YuNet `face_detection_yun
 - **OCR text is as read, not corrected.** Quote `label` as it is; do not fix spelling silently. Mention the language setting and that Japanese and small or stylised text have more errors. If `engine.files[].variant` is not `tessdata_best`, say the data variant differs from the one the ADR recommends.
 - **Shots and reframe are measurements with limits.** Say which engine found the shots and that `gradual` comes from a blend test (PySceneDetect) or a network (TransNetV2). A reframe is a heuristic: report `counts.subject_outside` and each shot's `subject_inside_fraction`; a subject is a box track, not a person.
 - **Speakers is a heuristic too.** Say whether it used mouth motion alone or diarization turns (`method.name`), and that mouth motion is not speech (laughing, chewing, a hand at the mouth move it; a speaker turned away is not seen). Quote `ranges[].reason`; a `SPEAKER_nn` or a track id names nobody. Recommend watching the cut before publishing.
+- **PII is a pattern check.** Every region is `CONFIRM`: ask, never blur or drop on your own. Say which locales were used, that a bare name or a date without its keyword is not found and OCR misreads hide data, so "no region" is not "no personal data". Never paste the matched values into a message; `excerpt` is masked on purpose.
 - **Missing engine = say so.** Exit 3 means an engine, model file, tessdata language or ffmpeg-skill is missing; relay `doctor`'s install line. Never report "no faces" when the run did not happen.
 - **Provenance.** Each result names the engine, the model, and the model file's sha256 on every box; keep `detections.json` with any redaction made from it.
 

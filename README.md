@@ -29,10 +29,11 @@ detection text slide.png -o text.json         # jpn+eng by default
 detection objects hall.mp4 --every 2 --classes person,laptop -o objects.json
 detection shots talk.mp4 -o shots.json        # every frame: cuts and dissolves
 detection reframe tracks.json --aspect 9:16 --shots shots.json -o reframe.json
+detection pii text.json -o pii.json            # patient ids, dates of birth, ... to confirm before publishing
 detection speakers --camera camA_tracks.json --camera camB_tracks.json -o speakers.json   # multicam switch list
 ```
 
-`tracks`, `reframe`, `speakers` and `check` need only the Python standard library (`pip install -e .`, Python >= 3.9).
+`tracks`, `reframe`, `speakers`, `pii` and `check` need only the Python standard library (`pip install -e .`, Python >= 3.9).
 
 ## Install, per engine
 
@@ -67,7 +68,8 @@ Another file (for example `yolox_s.onnx`) still runs: its measured sha256 is rec
 | `shots <video> [--engine pyscenedetect\|transnetv2] [--threshold X] [--min-shot-frames 15] [--width 320] [--max-frames 20000] [-o shots.json]` | Shot boundaries over every frame: each shot's start/end in frames and seconds, cut / gradual, a score, the engine ([`detection-skill/shots@1`](docs/detections.md#shots)) |
 | `reframe <face-tracks.json> -o reframe.json [--aspect 9:16] [--shots shots.json] [--objects object-tracks.json] [--dead-zone 0.1] [--max-speed 0.6]` | A crop window per sample time following the subject, jumping only at a shot boundary, plus one window per shot (a heuristic, [`detection-skill/reframe@1`](docs/detections.md#reframe-a-heuristic)) |
 | `speakers --camera <cam0-tracks.json> --camera <cam1-tracks.json> -o speakers.json [--offsets 0,S] [--turns turns.json] [--turns-offset S] [--window 0.6] [--min-activity 0.02] [--min-shot 1.0]` | Who speaks in each time range and which camera shows them best, as a switch list for ffmpeg-skill `multicam` (a heuristic, [`detection-skill/speakers@1`](docs/detections.md#speakers-a-heuristic)) |
-| `check <det.json\|tracks.json\|shots.json\|reframe.json\|speakers.json>` | Validate a detections, tracks, shots, reframe or speakers document |
+| `pii <text-det.json> -o pii.json [--faces face-det.json] [--locale intl,en-US,en-GB,ja-JP] [--pad 0.1]` | Names, patient ids, dates of birth, phone numbers and addresses in OCR text (patterns per locale, `intl` by default) and faces, as redact-ready regions, each a proposal to confirm ([`detection-skill/pii@1`](docs/detections.md#personal-data-patterns-every-region-a-proposal)) |
+| `check <det.json\|tracks.json\|shots.json\|reframe.json\|speakers.json\|pii.json>` | Validate a detections, tracks, shots, reframe, speakers or pii document |
 | `contract --json` | Machine-readable contract in the OS registry's shape |
 | `doctor --json [--models-dir DIR] [--tessdata-dir DIR] [--ffmpeg-skill DIR]` | Python, ffmpeg-skill, OpenCV, ONNX Runtime, the model files, Tesseract and its languages; `MISSING` entries carry install lines |
 
@@ -81,11 +83,12 @@ Common options: `--max-frames 2000` (refuses a bigger sampling plan), `--timeout
 - **Shots.** Every frame through `look --at` (frame k at its time rounded down to the millisecond, 320 px wide), PySceneDetect's ContentDetector and AdaptiveDetector for cuts, a blend test for dissolves and fades ([ADR-003](docs/decisions.md)).
 - **Reframe.** Per shot, the face track with the most presence is the subject; the window follows its centre with a dead zone and a speed limit and jumps only at a shot boundary ([ADR-004](docs/decisions.md)).
 - **Speakers.** Mouth motion (the spread of each face's mouth contrast over 0.6 s) says who speaks; view quality (size, frontal angle, sharpness) picks the camera; with diarization-skill turns, each speaker is matched to a face and the switch follows the turns ([ADR-005](docs/decisions.md)).
+- **Personal data.** OCR lines checked against keyword and format patterns per locale (`intl` by default; `en-US`, `en-GB`, `ja-JP` opt-in); each hit is the whole line's box as a redact rectangle with its reason, always `CONFIRM`, never removed here ([ADR-006](docs/decisions.md)).
 - **Tracks.** Greedy IoU linking between consecutive samples (with a centre-distance fallback for motion faster than the sampling); redact rectangles are the padded union of a track's boxes, snapped to even pixels, extended by one sampling step on each side. Documented as a heuristic, not identity.
 
 ## Measured here
 
-On the fixtures in `tests/` (2026-10-30; shots and reframe 2026-11-06; speakers 2026-11-06; CPU, this repository's tests):
+On the fixtures in `tests/` (2026-10-30; shots and reframe 2026-11-06; speakers and pii 2026-11-06; CPU, this repository's tests):
 
 | What | Result |
 |---|---|
@@ -95,6 +98,7 @@ On the fixtures in `tests/` (2026-10-30; shots and reframe 2026-11-06; speakers 
 | PySceneDetect 0.6.7.1, 225-frame fixture (six lavfi sources, 3 hard cuts, 2 cross-dissolves of 20 and 25 frames) | every hard cut on its frame (50, 120, 185), no extra cut; both dissolves found as gradual (middle frame 80 and 148 inside the blends 70-89 and 135-159) |
 | Reframe from YuNet tracks + shots: a face walking 105 px/s across 960x540, then a cut | face inside the window in 40/40 sampled frames for 9:16 (302x540), 1:1 and 4:5; fastest move inside a shot 120 px/s against a limit of 181 px/s (9:16) |
 | Speakers from YuNet `--attributes` tracks: two cameras (a wide shot of two faces, a close-up of one), speakers alternating every 3 s for 12 s, mouths drawn opening and closing | with turns: the switch list is exactly the turns (`0-3:0, 3-6:1, 6-9:0, 9-12:1`); mouth motion alone: every switch within 0.12 s of the truth, the close-up chosen for its speaker |
+| `pii` on rendered slides read by Tesseract | `Patient ID: MRN 00482913` + `DOB: 1956-03-14`: exactly those two lines (intl); a results slide (publication date, statistics): none; 患者ID + 生年月日 (和暦) with `--locale ja-JP`: both |
 | Tesseract 5.3.4, rendered slide text (Noto Sans CJK, 44 px) | Japanese CER 0.019 (apt `tessdata`) / 0.057 (`tessdata_best`); English CER 0.000 with both; vertical Japanese (`jpn_vert`) CER 0.000 |
 
 These are small synthetic fixtures that prove the plumbing and give a floor, not a benchmark. Real event footage (motion blur, small faces, low light, stylised slide fonts) will do worse; measure on your own material before relying on it. On these fixtures `tessdata_best` was not better than apt's `tessdata` for Japanese (it misread 第二章), so the ADR's follow-up (a Japanese CER comparison on real slides, and RapidOCR) stays open.

@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/kajisho5/detection-skill/schemas/pii.schema.json",
+  "title": "Personal and patient data",
+  "description": "detection-skill/pii@1. Personal and patient data in slides and frames: OCR text lines that match a keyword or format pattern of the chosen locales (names, patient ids, dates of birth, phone numbers, addresses) and, when given, faces, each as a redact-ready rectangle with its category, the rule(s) and the reason. Every region is a proposal (decision CONFIRM); nothing is removed and none is dropped. The matched value is never copied: `excerpt` keeps the keyword and masks the value. The validator in src/detection_skill/pii.py is the executable form and also checks that every region is in the redact spans.",
+  "type": "object",
+  "required": ["schema", "source", "inputs", "method", "parameters", "regions", "redact", "counts", "skill", "skill_version", "tool",
+               "created_at", "processing_seconds", "warnings"],
+  "properties": {
+    "schema": {"const": "detection-skill/pii@1"},
+    "source": {"type": "object", "description": "copied from the text detections"},
+    "inputs": {"type": "object", "required": ["text", "faces"],
+               "description": "each input: file (bare name), fingerprint of its bytes, tool, kind, frames, detections, lang, level"},
+    "method": {"type": "object", "required": ["name", "heuristic", "identity", "note"],
+               "properties": {"name": {"const": "patterns"}, "heuristic": {"const": true}, "identity": {"const": false}}},
+    "parameters": {"type": "object", "required": ["locales", "pad", "categories", "rules"],
+                   "properties": {"locales": {"type": "array", "minItems": 1, "items": {"enum": ["intl", "en-US", "en-GB", "ja-JP"]}}}},
+    "regions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "t", "category", "box", "rules", "excerpt", "reason", "source", "score", "decision", "redact"],
+        "properties": {
+          "id": {"type": "string", "pattern": "^pii_\\d{3,}$"},
+          "t": {"type": ["number", "null"], "description": "frame time in seconds, null for an image"},
+          "category": {"enum": ["name", "patient_id", "date_of_birth", "phone", "address", "face"]},
+          "box": {"type": "array", "minItems": 4, "maxItems": 4, "description": "the OCR line's (or face's) box in source pixels"},
+          "rules": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+          "excerpt": {"type": ["string", "null"], "description": "the keyword with the value masked (# digits, * letters); null for a face"},
+          "reason": {"type": "string", "minLength": 1},
+          "source": {"enum": ["text", "faces"]},
+          "decision": {"const": "CONFIRM"},
+          "redact": {"$ref": "#/$defs/rect"}
+        }
+      }
+    },
+    "redact": {
+      "type": "array",
+      "description": "regions of one category overlapping at consecutive sample times joined into one span [first t, last t + one step]; start/end null for an image",
+      "items": {
+        "allOf": [{"$ref": "#/$defs/rect"}],
+        "type": "object",
+        "required": ["category", "regions", "start", "end", "x", "y", "width", "height", "decision", "reason"],
+        "properties": {"regions": {"type": "array", "minItems": 1}, "start": {"type": ["number", "null"]}, "end": {"type": ["number", "null"]},
+                       "decision": {"const": "CONFIRM"}}
+      }
+    },
+    "counts": {"type": "object", "required": ["regions", "redact", "by_category", "confirm"]},
+    "skill": {"const": "detection-skill"},
+    "skill_version": {"type": "string"},
+    "tool": {"const": "detection/pii"},
+    "created_at": {"type": "string"},
+    "processing_seconds": {"type": "number", "minimum": 0},
+    "warnings": {"type": "array", "items": {"type": "string"}}
+  },
+  "$defs": {
+    "rect": {"type": "object", "required": ["x", "y", "width", "height"],
+             "properties": {"x": {"type": "integer", "minimum": 0}, "y": {"type": "integer", "minimum": 0},
+                            "width": {"type": "integer", "minimum": 2, "multipleOf": 2}, "height": {"type": "integer", "minimum": 2, "multipleOf": 2}}}
+  }
+}

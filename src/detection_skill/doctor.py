@@ -145,7 +145,7 @@ def doctor(models_dir: Optional[str] = None, tessdata: Optional[str] = None, ffm
     objects_ok = ort["found"] and cv2["found"] and np_["found"] and obj["status"] == "OK"
     shots_ok = sd_ok and cv2["found"] and np_["found"]
     ready = {"faces": faces_ok, "text": text_ok, "objects": objects_ok, "shots": shots_ok, "video_frames": ffm_ok,
-             "tracks": py_ok, "reframe": py_ok, "speakers": py_ok, "check": py_ok}
+             "tracks": py_ok, "reframe": py_ok, "speakers": py_ok, "pii": py_ok, "check": py_ok}
     # Optional engines never fail doctor (ADR-003): TransNetV2 MISSING is reported, `ok` and `ready` do not depend on it.
     optional_ready = {"shots_transnetv2": ort["found"] and cv2["found"] and np_["found"] and shot["status"] == "OK"}
     problems = [f"{k}: {v['status']}" + (f" ({v.get('detail')})" if v.get("detail") else "")

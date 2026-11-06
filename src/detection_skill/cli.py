@@ -9,6 +9,7 @@
   detection shots talk.mp4 -o shots.json --json                            # every frame: cuts and dissolves (PySceneDetect)
   detection reframe tracks.json --aspect 9:16 --shots shots.json -o reframe.json   # a crop window per sample time
   detection faces camB.mp4 --every 0.12 --attributes -o b.json                # + size, pose, sharpness, mouth contrast
+  detection pii text.json [--faces faces.json] [--locale intl,ja-JP] -o pii.json   # personal / patient data to confirm
   detection speakers --camera a_tracks.json --camera b_tracks.json [--turns turns.json] -o speakers.json  # multicam switch list
   detection check faces.json --json
   detection contract --json
@@ -31,6 +32,7 @@ from .detections import DETECTIONS_SCHEMA, validate_detections
 from .doctor import doctor
 from .engines import DEFAULT_SHOT_ENGINE, SHOT_ENGINES
 from .errors import DetectionError
+from .pii import PII_SCHEMA, make_pii, validate_pii
 from .reframe import REFRAME_SCHEMA, make_reframe, validate_reframe
 from .service import DEFAULT_MAX_FRAMES, DEFAULT_MIN_SCORE, DEFAULT_TIMEOUT, LEVELS, detect
 from .shots import DEFAULT_MAX_FRAMES_SHOTS, SHOT_WIDTH, SHOTS_SCHEMA, detect_shots, validate_shots
@@ -38,14 +40,25 @@ from .speakers import SPEAKERS_SCHEMA, make_speakers, validate_speakers
 from .tracks import TRACKS_SCHEMA, fingerprint_bytes, make_tracks, validate_tracks
 
 VALIDATORS = {DETECTIONS_SCHEMA: validate_detections, TRACKS_SCHEMA: validate_tracks, SHOTS_SCHEMA: validate_shots,
-              REFRAME_SCHEMA: validate_reframe, SPEAKERS_SCHEMA: validate_speakers}
+              REFRAME_SCHEMA: validate_reframe, SPEAKERS_SCHEMA: validate_speakers,
+              PII_SCHEMA: validate_pii}
 
 KIND_OF = {"faces": "face", "text": "text", "objects": "object"}
 
 
+def _json_text(doc: Dict[str, Any]) -> str:
+    """UTF-8 JSON, or ASCII-escaped JSON when stdout cannot encode it (a Windows cp1252 console): valid JSON either way."""
+    text = json.dumps(doc, ensure_ascii=False, indent=2)
+    try:
+        text.encode(getattr(sys.stdout, "encoding", None) or "utf-8")
+    except (UnicodeEncodeError, LookupError):
+        text = json.dumps(doc, ensure_ascii=True, indent=2)
+    return text
+
+
 def _emit(doc: Dict[str, Any], as_json: bool, human: str = "") -> None:
     if as_json:
-        print(json.dumps(doc, ensure_ascii=False, indent=2))
+        print(_json_text(doc))
     elif human:
         print(human)
 
@@ -53,7 +66,7 @@ def _emit(doc: Dict[str, Any], as_json: bool, human: str = "") -> None:
 def _fail(code: str, message: str, as_json: bool, detail: Optional[Any] = None) -> int:
     doc = {"ok": False, "error": {"code": code, "message": message, "detail": detail}}
     if as_json:
-        print(json.dumps(doc, ensure_ascii=False, indent=2))
+        print(_json_text(doc))
     else:
         print(f"error: {message}" + (f" ({detail})" if detail else ""), file=sys.stderr)
     return ERRORS.get(code, {}).get("exit_code", 1)
@@ -244,6 +257,29 @@ def cmd_speakers(a: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_pii(a: argparse.Namespace) -> int:
+    _check_output(a.output, [a.text] + ([a.faces] if a.faces else []), a.overwrite)
+    text, tfp = _read_doc(a.text)
+    files: Dict[str, Any] = {"text": (a.text, tfp)}
+    faces = None
+    if a.faces:
+        faces, ffp = _read_doc(a.faces)
+        files["faces"] = (a.faces, ffp)
+    out = make_pii(text, faces=faces, locales=a.locale, pad=a.pad, files=files)
+    rep = validate_pii(out)
+    if not rep.ok:
+        raise DetectionError("INVALID_RESULT", "pii failed validation; nothing written", rep.errors[:10])
+    _write_json(a.output, out)
+    lines = [f"{out['counts']['regions']} region(s) to confirm ({', '.join(out['parameters']['locales'])}); wrote {a.output}"]
+    for r in out["regions"]:
+        t = "image" if r["t"] is None else f"{r['t']:9.3f}s"
+        x = r["redact"]
+        lines.append(f"  {r['id']}  {t}  {r['category']:<13}  x={x['x']} y={x['y']} w={x['width']} h={x['height']}  "
+                     f"{r['excerpt'] or ''}")
+    _emit(dict(out, ok=True, pii_file=os.path.abspath(a.output)), a.json, "\n".join(lines))
+    return 0
+
+
 def cmd_check(a: argparse.Namespace) -> int:
     doc = load_json(a.file)
     schema = doc.get("schema") if isinstance(doc, dict) else None
@@ -404,7 +440,19 @@ def parser() -> argparse.ArgumentParser:
     sp.add_argument("--json", action="store_true")
     sp.set_defaults(func=cmd_speakers)
 
-    c = sub.add_parser("check", help="validate a detections, tracks, shots, reframe or speakers document")
+    pi = sub.add_parser("pii", help="personal and patient data in OCR text (and faces): redact-ready regions, each a proposal "
+                                    "to confirm (patterns per locale)")
+    pi.add_argument("text", help="text detections (detection text, --level line)")
+    pi.add_argument("--faces", help="face detections of the same file (detection faces): each face is a region to confirm")
+    pi.add_argument("--locale", action="append", help="pattern profiles, comma-separated and/or repeated: intl (default), "
+                                                      "en-US, en-GB, ja-JP")
+    pi.add_argument("--pad", type=_unit, help="padding of a redact rectangle, fraction of the box per side (default 0.1)")
+    pi.add_argument("-o", "--output", required=True, help="write the pii JSON here")
+    pi.add_argument("--overwrite", action="store_true")
+    pi.add_argument("--json", action="store_true")
+    pi.set_defaults(func=cmd_pii)
+
+    c = sub.add_parser("check", help="validate a detections, tracks, shots, reframe, speakers or pii document")
     c.add_argument("file")
     c.add_argument("--json", action="store_true")
     c.set_defaults(func=cmd_check)
