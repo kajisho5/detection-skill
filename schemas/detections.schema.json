@@ -129,7 +129,8 @@
         "roll_deg": {"type": ["number", "null"], "minimum": -180, "maximum": 180, "description": "angle of the eye line"},
         "frontal": {"type": ["number", "null"], "minimum": 0, "maximum": 1, "description": "cos(yaw): 1 looking at the camera, 0 in profile"},
         "sharpness": {"type": ["number", "null"], "minimum": 0, "description": "variance of the Laplacian of the face resized to 96x96 gray"},
-        "mouth_contrast": {"type": ["number", "null"], "minimum": 0, "maximum": 1, "description": "gray-level standard deviation around the mouth corners / 128; its change over time is mouth motion"}
+        "mouth_contrast": {"type": ["number", "null"], "minimum": 0, "maximum": 1, "description": "gray-level standard deviation around the mouth corners / 128; its change over time is mouth motion"},
+        "eyes_open": {"type": ["number", "null"], "minimum": 0, "maximum": 1, "description": "share of edges across the eyes in the eye regions, rescaled: about 0.8 open, 0.2 closed; null when the head is rolled over 25 degrees"}
       }
     }
   }

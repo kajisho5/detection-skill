@@ -199,3 +199,22 @@ Medical and scientific talks show case slides; a patient id, a date of birth or 
 - Faces are all proposed when `--faces` is given; the skill cannot tell a clinical photo from the speaker, so the person confirming decides.
 - Measured on rendered slides read by Tesseract (CI): a slide with `Patient ID: MRN 00482913` and `DOB: 1956-03-14` gives exactly those two regions (intl); a results slide with a publication date and statistics gives none; the Japanese slide (患者ID, 生年月日 in 和暦) gives both with `--locale ja-JP`. Synthetic slides; real case slides (photos of charts, scanned forms, small print) are unmeasured.
 
+## ADR-007 Face attributes for frame choice (`eyes_open`, `detection rank`)
+
+Roadmap step 12.
+
+### Context
+
+thumbnail-skill and take selection should not pick a frame where the face blinks or is blurred. Size, frontal angle and sharpness are already measured by `detection faces --attributes` (ADR-005); eyes open is not, and nothing ranks frames by them.
+
+### Decision
+
+- **`eyes_open`** joins the attributes of `faces --attributes` (`engines/faceattrs.py`): in each eye region (around YuNet's eye landmark, 0.56 x 0.28 eye distances, resized to 40x20 gray) r = mean|dI/dx| / (mean|dI/dx| + mean|dI/dy|), the share of edges across the eye: an open eye shows the iris and the corners, a closed one mostly the lid line along the eye. eyes_open = mean over both eyes of clamp((r - 0.25) / 0.2, 0, 1); null when the head is rolled more than 25 degrees or an eye region leaves the frame. A measured value from edge contrast, documented as a heuristic, not a blink classifier and not a model.
+- **`detection rank <face-detections.json> [--top N] [--all-faces] -o rank.json`** writes `detection-skill/face-rank@1` (`schemas/face-rank.schema.json`): the frames in descending score, each face with its four parts in 0-1 and its score = 0.35 eyes open + 0.25 sharpness / (sharpness + 100) + 0.20 frontal + 0.20 min(1, size / 0.4). A frame scores by its best face, or with `--all-faces` by the mean of its faces (a group shot where one person blinks drops). A part not measured counts 0 and is listed in `missing`. Frames without a face come last with a null score. The validator checks the order, the ranks and that each score is the weighted sum of its parts.
+- Blur is reported as `sharpness` (higher = sharper), the same measure ADR-005 uses for the camera choice.
+
+### Consequences
+
+- Heuristics: glasses, heavy make-up, side light and small faces (eye distance under about 12 px) disturb `eyes_open`; a squint or a look down can read as closed. The ranking suggests frames; a person or thumbnail-skill picks.
+- Measured on the CI fixture (the astronaut portrait, and the same face with both eyes painted closed, a soft-edged patch of the cheek's colour with a lash line, placed with the landmarks; a 5 s video: open, closed, open blurred, open, closed; sampled every 0.5 s): every sharp open frame ranks above every other frame, every open frame's `eyes_open` (0.99-1.00) is above every closed frame's (0.30-0.35), and the blurred frames' sharpness is below every sharp frame's. Synthetic closed eyes, not real blinks; real footage is unmeasured.
+

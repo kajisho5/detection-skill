@@ -14,6 +14,13 @@ mouth corner, in that order; the subject's right eye is on the image's left for 
   clamped to 0-1. An open mouth shows the dark inside and the teeth, a closed one is mostly lips, so the value
   changes while someone talks; `detection speakers` reads its variation over time as mouth motion. One frame's value
   says nothing about speech.
+- `eyes_open`: edge directions in the two eye regions (around the eye landmarks, 0.56 x 0.28 eye distances, resized
+  to 40x20 gray): an open eye shows the iris and the eye corners, edges across the eye (horizontal gradients), a
+  closed one mostly the lid line, an edge along it (vertical gradients). Per eye r = mean|dI/dx| / (mean|dI/dx| +
+  mean|dI/dy|) and eyes_open = mean over the eyes of clamp((r - 0.25) / 0.2, 0, 1). A measured value, not a
+  classifier; null when the head is rolled more than 25 degrees (the eye line is no longer horizontal) or an eye
+  region leaves the frame. Glasses, heavy make-up, strong side light and small faces (eye distance under about 12 px)
+  disturb it.
 
 `pose` is plain Python (unit-testable without OpenCV); `measure` needs numpy and OpenCV and runs inside the engine.
 """
@@ -22,7 +29,9 @@ from __future__ import annotations
 import math
 from typing import Any, Dict, List, Optional, Sequence
 
-ATTRIBUTE_KEYS = ("size", "yaw_deg", "roll_deg", "frontal", "sharpness", "mouth_contrast")
+ATTRIBUTE_KEYS = ("size", "yaw_deg", "roll_deg", "frontal", "sharpness", "mouth_contrast", "eyes_open")
+EYES_MAX_ROLL = 25.0
+EYE_LOW, EYE_SPAN = 0.25, 0.2
 FACE_SIDE = 96
 DIGITS = 4
 
@@ -72,7 +81,36 @@ def measure(gray: Any, box: Sequence[float], landmarks: Optional[Sequence[Sequen
         if m is not None:
             patch = gray[m[1]:m[3], m[0]:m[2]].astype(np.float64)
             out["mouth_contrast"] = round(min(1.0, float(patch.std()) / 128.0), DIGITS)
+    if landmarks and len(landmarks) >= 2 and out["roll_deg"] is not None and abs(out["roll_deg"]) <= EYES_MAX_ROLL:
+        out["eyes_open"] = _eyes_open(cv2, np, gray, landmarks)
     return out
 
 
-__all__ = ["ATTRIBUTE_KEYS", "pose", "measure"]
+def eye_share(gx: float, gy: float) -> Optional[float]:
+    """clamp((r - 0.25) / 0.2) for r = gx / (gx + gy), the share of edges across the eye; None without edges."""
+    if gx + gy <= 1e-9:
+        return None
+    r = gx / (gx + gy)
+    return min(1.0, max(0.0, (r - EYE_LOW) / EYE_SPAN))
+
+
+def _eyes_open(cv2: Any, np: Any, gray: Any, landmarks: Sequence[Sequence[float]]) -> Optional[float]:
+    h, w = gray.shape[:2]
+    (rx, ry), (lx, ly) = landmarks[0][:2], landmarks[1][:2]
+    d = math.hypot(lx - rx, ly - ry)
+    vals = []
+    for ex, ey in ((rx, ry), (lx, ly)):
+        if ex - 0.28 * d < 0 or ey - 0.14 * d < 0 or ex + 0.28 * d > w or ey + 0.14 * d > h:
+            return None
+        r = _clip_rect(ex - 0.28 * d, ey - 0.14 * d, ex + 0.28 * d, ey + 0.14 * d, w, h)
+        if r is None:
+            return None
+        p = cv2.resize(gray[r[1]:r[3], r[0]:r[2]], (40, 20), interpolation=cv2.INTER_AREA).astype(np.float64)
+        v = eye_share(float(np.abs(cv2.Sobel(p, cv2.CV_64F, 1, 0)).mean()), float(np.abs(cv2.Sobel(p, cv2.CV_64F, 0, 1)).mean()))
+        if v is None:
+            return None
+        vals.append(v)
+    return round(sum(vals) / len(vals), DIGITS)
+
+
+__all__ = ["ATTRIBUTE_KEYS", "pose", "measure", "eye_share"]

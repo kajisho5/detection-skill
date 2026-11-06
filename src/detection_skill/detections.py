@@ -322,7 +322,7 @@ def _check_det(d: Any, w: str, kind: str, t: Any, width: Optional[int], height: 
 
 
 ATTRIBUTE_RANGES = {"size": (0.0, 1.0), "yaw_deg": (-90.0, 90.0), "roll_deg": (-180.0, 180.0), "frontal": (0.0, 1.0),
-                    "sharpness": (0.0, math.inf), "mouth_contrast": (0.0, 1.0)}
+                    "sharpness": (0.0, math.inf), "mouth_contrast": (0.0, 1.0), "eyes_open": (0.0, 1.0)}
 
 
 def check_attributes(a: Any) -> List[str]:
