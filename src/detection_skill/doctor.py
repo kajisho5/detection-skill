@@ -18,8 +18,25 @@ FACE_MODEL_SOURCE = ("download face_detection_yunet_2026may.onnx (MIT) from "
 OBJECT_MODEL_SOURCE = ("download a YOLOX ONNX file (Apache-2.0, e.g. yolox_s.onnx or yolox_nano.onnx) from "
                        "https://github.com/Megvii-BaseDetection/YOLOX/releases into the models directory "
                        f"and set ${ENV_MODELS_DIR}")
+SHOT_MODEL_SOURCE = ("optional (detection shots --engine transnetv2): an ONNX export of TransNetV2 (code and weights MIT, "
+                     "https://github.com/soCzech/TransNetV2) saved as transnetv2.onnx in the models directory "
+                     f"(${ENV_MODELS_DIR}); the default engine (PySceneDetect) needs no model file")
 TESSDATA_SOURCE = ("for tessdata_best: download jpn.traineddata, jpn_vert.traineddata and eng.traineddata from "
                    f"https://github.com/tesseract-ocr/tessdata_best into a directory and set ${ENV_TESSDATA_DIR}")
+
+
+SCENEDETECT_RANGE = ">=0.6.7 <0.7"
+SCENEDETECT_MIN, SCENEDETECT_BELOW = (0, 6, 7), (0, 7)
+
+
+def _ver(text: Optional[str]) -> tuple:
+    out = []
+    for part in (text or "").split("."):
+        digits = "".join(ch for ch in part if ch.isdigit())
+        if not digits:
+            break
+        out.append(int(digits))
+    return tuple(out) or (0,)
 
 
 def _pkg(module: str, dist: str) -> Dict[str, Any]:
@@ -72,14 +89,23 @@ def doctor(models_dir: Optional[str] = None, tessdata: Optional[str] = None, ffm
                                  install=None if ort["found"] else "pip install 'detection-skill[objects]'  (onnxruntime)")
     np_ = _pkg("numpy", "numpy")
     checks["numpy"] = dict(np_, install=None if np_["found"] else "installed with the faces / objects extras")
+    sd = _pkg("scenedetect", "scenedetect")
+    sd_ok = sd["found"] and SCENEDETECT_MIN <= _ver(sd["version"]) < SCENEDETECT_BELOW
+    checks["scenedetect"] = dict(sd, status="OK" if sd_ok else ("INCOMPATIBLE" if sd["found"] else "MISSING"),
+                                 required=SCENEDETECT_RANGE, used_for="shots (PySceneDetect, the default shot engine)",
+                                 install=None if sd_ok else "pip install 'detection-skill[shots]'  (scenedetect>=0.6.7,<0.7)")
 
     mdir = resolve_models_dir(models_dir)
     models = inspect_models(mdir)
-    face, obj = models["face"], models["object"]
+    face, obj, shot = models["face"], models["object"], models["shot"]
     face["install"] = None if face["status"] == "OK" else FACE_MODEL_SOURCE
     obj["install"] = None if obj["status"] == "OK" else OBJECT_MODEL_SOURCE
+    shot["install"] = None if shot["status"] == "OK" else SHOT_MODEL_SOURCE
+    shot["optional"] = True
+    shot["used_for"] = "shots --engine transnetv2 (optional; the default engine needs no model file)"
     checks["face_model"] = face
     checks["object_model"] = obj
+    checks["transnetv2_model"] = shot
 
     binary = find_tesseract()
     if not binary:
@@ -117,17 +143,23 @@ def doctor(models_dir: Optional[str] = None, tessdata: Optional[str] = None, ffm
     faces_ok = cv2["found"] and np_["found"] and face["status"] == "OK"
     text_ok = checks["tesseract"]["status"] == "OK" and checks["tessdata"]["status"] == "OK"
     objects_ok = ort["found"] and cv2["found"] and np_["found"] and obj["status"] == "OK"
-    ready = {"faces": faces_ok, "text": text_ok, "objects": objects_ok, "video_frames": ffm_ok,
-             "tracks": py_ok, "check": py_ok}
+    shots_ok = sd_ok and cv2["found"] and np_["found"]
+    ready = {"faces": faces_ok, "text": text_ok, "objects": objects_ok, "shots": shots_ok, "video_frames": ffm_ok,
+             "tracks": py_ok, "reframe": py_ok, "check": py_ok}
+    # Optional engines never fail doctor (ADR-003): TransNetV2 MISSING is reported, `ok` and `ready` do not depend on it.
+    optional_ready = {"shots_transnetv2": ort["found"] and cv2["found"] and np_["found"] and shot["status"] == "OK"}
     problems = [f"{k}: {v['status']}" + (f" ({v.get('detail')})" if v.get("detail") else "")
-                for k, v in checks.items() if v["status"] != "OK"]
+                for k, v in checks.items() if v["status"] != "OK" and not v.get("optional")]
+    notes = [f"{k}: {v['status']} (optional)" for k, v in checks.items() if v["status"] != "OK" and v.get("optional")]
     return {
         "ok": all(ready.values()),
         "skill": "detection-skill",
         "version": __version__,
         "ready": ready,
+        "optional_ready": optional_ready,
         "checks": checks,
         "problems": problems,
+        "notes": notes,
         "network": "never used at run time; model files are read from the models directory and the tessdata directory",
     }
 

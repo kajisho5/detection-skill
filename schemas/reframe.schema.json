@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/kajisho5/detection-skill/schemas/reframe.schema.json",
+  "title": "Reframe",
+  "description": "detection-skill/reframe@1. A subject path for reframing: one crop window of a target aspect per sample time, from face tracks (object tracks as a fallback) and, when given, shots; smoothed with a dead zone and a speed limit inside a shot, switching subject and jumping only at a shot boundary. A documented heuristic; a track id is not an identity. The validator in src/detection_skill/reframe.py is the executable form and also checks the speed limit inside each shot.",
+  "type": "object",
+  "required": ["schema", "source", "frame_size", "aspect", "window", "inputs", "method", "parameters", "windows", "switches",
+               "shots", "counts", "skill", "skill_version", "tool", "created_at", "processing_seconds", "warnings"],
+  "properties": {
+    "schema": {"const": "detection-skill/reframe@1"},
+    "source": {"type": "object", "description": "copied from the face tracks"},
+    "frame_size": {"type": "object", "required": ["width", "height"]},
+    "aspect": {"type": "object", "required": ["name", "ratio"], "properties": {"name": {"type": "string", "pattern": "^\\d+:\\d+$"}, "ratio": {"type": "number"}}},
+    "window": {"type": "object", "required": ["width", "height"],
+               "properties": {"width": {"type": "integer", "minimum": 2, "multipleOf": 2}, "height": {"type": "integer", "minimum": 2, "multipleOf": 2}}},
+    "inputs": {"type": "object", "required": ["faces", "objects", "shots"],
+               "description": "each input: file (bare name), fingerprint of its bytes, tool, and its kind / engine"},
+    "method": {"type": "object", "required": ["name", "heuristic", "identity", "note"],
+               "properties": {"name": {"const": "subject-path"}, "heuristic": {"const": true}, "identity": {"const": false}}},
+    "parameters": {"type": "object", "required": ["dead_zone", "max_speed", "dead_zone_px", "max_speed_px_per_s", "object_classes"]},
+    "windows": {
+      "type": "array", "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["t", "shot", "x", "y", "width", "height", "subject", "subject_box", "subject_inside"],
+        "properties": {
+          "t": {"type": "number", "minimum": 0},
+          "shot": {"type": "integer", "minimum": 0},
+          "x": {"type": "integer", "minimum": 0, "multipleOf": 2}, "y": {"type": "integer", "minimum": 0, "multipleOf": 2},
+          "width": {"type": "integer"}, "height": {"type": "integer"},
+          "subject": {"type": ["string", "null"], "pattern": "^(face|object)/track_\\d{3,}$"},
+          "subject_box": {"type": ["array", "null"], "minItems": 4, "maxItems": 4},
+          "subject_inside": {"type": ["boolean", "null"]}
+        }
+      }
+    },
+    "switches": {"type": "array", "items": {"type": "object", "required": ["t", "shot", "from", "to", "reason"]}},
+    "shots": {"type": "array", "items": {"type": "object",
+              "required": ["index", "start", "end", "subject", "x", "y", "width", "height", "subject_inside_fraction"],
+              "description": "one fixed window per shot, for an engine without a time-varying crop"}},
+    "counts": {"type": "object", "required": ["windows", "switches", "shots", "subject_outside"]},
+    "skill": {"const": "detection-skill"},
+    "skill_version": {"type": "string"},
+    "tool": {"const": "detection/reframe"},
+    "created_at": {"type": "string"},
+    "processing_seconds": {"type": "number", "minimum": 0},
+    "warnings": {"type": "array", "items": {"type": "string"}}
+  }
+}

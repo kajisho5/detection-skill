@@ -6,6 +6,8 @@
   detection text poster.mp4 --at 3,7.5 --vertical -o text.json             # vertical Japanese (jpn_vert)
   detection objects hall.mp4 --every 2 --classes person,laptop -o objects.json
   detection tracks faces.json -o tracks.json --json                        # boxes linked over time, redact rectangles
+  detection shots talk.mp4 -o shots.json --json                            # every frame: cuts and dissolves (PySceneDetect)
+  detection reframe tracks.json --aspect 9:16 --shots shots.json -o reframe.json   # a crop window per sample time
   detection check faces.json --json
   detection contract --json
   detection doctor --json
@@ -25,9 +27,15 @@ from . import __version__
 from .contract import ERRORS, contract
 from .detections import DETECTIONS_SCHEMA, validate_detections
 from .doctor import doctor
+from .engines import DEFAULT_SHOT_ENGINE, SHOT_ENGINES
 from .errors import DetectionError
+from .reframe import REFRAME_SCHEMA, make_reframe, validate_reframe
 from .service import DEFAULT_MAX_FRAMES, DEFAULT_MIN_SCORE, DEFAULT_TIMEOUT, LEVELS, detect
+from .shots import DEFAULT_MAX_FRAMES_SHOTS, SHOT_WIDTH, SHOTS_SCHEMA, detect_shots, validate_shots
 from .tracks import TRACKS_SCHEMA, fingerprint_bytes, make_tracks, validate_tracks
+
+VALIDATORS = {DETECTIONS_SCHEMA: validate_detections, TRACKS_SCHEMA: validate_tracks, SHOTS_SCHEMA: validate_shots,
+              REFRAME_SCHEMA: validate_reframe}
 
 KIND_OF = {"faces": "face", "text": "text", "objects": "object"}
 
@@ -140,11 +148,67 @@ def cmd_tracks(a: argparse.Namespace) -> int:
     return 0
 
 
+def _read_doc(path: str) -> Any:
+    """(document, fingerprint of its bytes)."""
+    if not os.path.isfile(path):
+        raise DetectionError("INPUT_NOT_FOUND", f"not found: {os.path.basename(path)}")
+    with open(path, "rb") as fh:
+        data = fh.read()
+    try:
+        return json.loads(data.decode("utf-8")), fingerprint_bytes(data)
+    except ValueError as exc:
+        raise DetectionError("INVALID_DETECTIONS", f"{os.path.basename(path)} is not JSON: {exc}")
+
+
+def cmd_shots(a: argparse.Namespace) -> int:
+    if a.output:
+        _check_output(a.output, [a.input], a.overwrite)
+    doc = detect_shots(a.input, engine_id=a.engine, threshold=a.threshold, min_shot_frames=a.min_shot_frames, width=a.width,
+                       max_frames=a.max_frames, models_dir=a.models_dir, model=a.model, ffmpeg_skill=a.ffmpeg_skill,
+                       timeout=a.timeout)
+    if a.output:
+        _write_json(a.output, doc)
+    c = doc["counts"]
+    lines = [f"{c['shots']} shot(s) in {c['frames']} frame(s): {c['cuts']} cut(s), {c['gradual']} gradual ({doc['engine']['id']})"]
+    for s in doc["shots"]:
+        lines.append(f"  {s['id']}  frames {s['start_frame']}-{s['end_frame']}  {s['start']:.3f}-{s['end']:.3f}s  {s['starts_with']}")
+    _emit(dict(doc, ok=True, shots_file=os.path.abspath(a.output) if a.output else None), a.json, "\n".join(lines))
+    return 0
+
+
+def cmd_reframe(a: argparse.Namespace) -> int:
+    inputs = [a.tracks] + [p for p in (a.shots, a.objects) if p]
+    _check_output(a.output, inputs, a.overwrite)
+    faces, ffp = _read_doc(a.tracks)
+    files = {"faces": (a.tracks, ffp)}
+    shots = objects = None
+    if a.shots:
+        shots, sfp = _read_doc(a.shots)
+        files["shots"] = (a.shots, sfp)
+    if a.objects:
+        objects, ofp = _read_doc(a.objects)
+        files["objects"] = (a.objects, ofp)
+    classes = [c for v in (a.object_classes or []) for c in v.split(",")] or None
+    out = make_reframe(faces, aspect=a.aspect, shots=shots, objects=objects, object_classes=classes, dead_zone=a.dead_zone,
+                       max_speed=a.max_speed, files=files)
+    rep = validate_reframe(out)
+    if not rep.ok:
+        raise DetectionError("INVALID_RESULT", "reframe failed validation; nothing written", rep.errors[:10])
+    _write_json(a.output, out)
+    w = out["window"]
+    lines = [f"{out['counts']['windows']} window(s) {w['width']}x{w['height']} ({out['aspect']['name']}), "
+             f"{out['counts']['switches']} subject switch(es); wrote {a.output}"]
+    for s in out["shots"]:
+        lines.append(f"  shot {s['index']}  {s['start']:.3f}-{s['end']:.3f}s  x={s['x']} y={s['y']}  subject {s['subject']}")
+    _emit(dict(out, ok=True, reframe_file=os.path.abspath(a.output)), a.json, "\n".join(lines))
+    return 0
+
+
 def cmd_check(a: argparse.Namespace) -> int:
     doc = load_json(a.file)
     schema = doc.get("schema") if isinstance(doc, dict) else None
-    rep = validate_tracks(doc) if schema == TRACKS_SCHEMA else validate_detections(doc)
-    out = dict(rep.to_dict(), schema=schema if schema in (DETECTIONS_SCHEMA, TRACKS_SCHEMA) else None)
+    rep = VALIDATORS.get(schema, validate_detections)(doc)
+    out = dict(rep.to_dict(), schema=schema if schema in VALIDATORS else None)
     _emit(out, a.json, "valid" if rep.ok else "INVALID\n" + "\n".join(f"  error: {e}" for e in rep.errors))
     return 0 if rep.ok else 2
 
@@ -247,7 +311,40 @@ def parser() -> argparse.ArgumentParser:
     tr.add_argument("--json", action="store_true")
     tr.set_defaults(func=cmd_tracks)
 
-    c = sub.add_parser("check", help="validate a detections or tracks document")
+    sh = sub.add_parser("shots", help="shot boundaries (cuts, gradual) over every frame of a video (PySceneDetect)")
+    sh.add_argument("input", help="a video (every frame via ffmpeg-skill look)")
+    sh.add_argument("--engine", choices=SHOT_ENGINES, default=DEFAULT_SHOT_ENGINE,
+                    help=f"{DEFAULT_SHOT_ENGINE} (default) or transnetv2 (optional, needs transnetv2.onnx)")
+    sh.add_argument("--threshold", type=_positive, help="cut threshold (PySceneDetect content score, default 27; "
+                                                        "TransNetV2 probability, default 0.5)")
+    sh.add_argument("--min-shot-frames", type=int, help="shortest shot in frames (default 15)")
+    sh.add_argument("--width", type=int, default=SHOT_WIDTH, help=f"width of the decoded frames (default {SHOT_WIDTH})")
+    sh.add_argument("--max-frames", type=int, default=DEFAULT_MAX_FRAMES_SHOTS,
+                    help=f"refuse a video with more frames (default {DEFAULT_MAX_FRAMES_SHOTS})")
+    sh.add_argument("--models-dir", help="directory with transnetv2.onnx (--engine transnetv2; default: $DETECTION_MODELS_DIR)")
+    sh.add_argument("--model", help="model file name inside the models directory (--engine transnetv2)")
+    sh.add_argument("--ffmpeg-skill", help="ffmpeg-skill checkout (default: $DETECTION_FFMPEG_SKILL_DIR, ...)")
+    sh.add_argument("--timeout", type=_positive, default=DEFAULT_TIMEOUT, help=f"seconds for the engine (default {DEFAULT_TIMEOUT:g})")
+    sh.add_argument("-o", "--output", help="write the shots JSON here")
+    sh.add_argument("--overwrite", action="store_true")
+    sh.add_argument("--json", action="store_true")
+    sh.set_defaults(func=cmd_shots)
+
+    rf = sub.add_parser("reframe", help="a crop window per sample time for a target aspect, from face tracks (heuristic)")
+    rf.add_argument("tracks", help="face tracks (detection faces -> detection tracks)")
+    rf.add_argument("--aspect", default="9:16", help="target aspect W:H (default 9:16; e.g. 1:1, 4:5)")
+    rf.add_argument("--shots", help="shots JSON (detection shots): the subject may change and the window jump only at a boundary")
+    rf.add_argument("--objects", help="object tracks JSON: fallback subject when no face is in view")
+    rf.add_argument("--object-classes", action="append", help="object classes used as a subject (default person)")
+    rf.add_argument("--dead-zone", type=_nonneg, help="no move while the subject is this fraction of the window width from "
+                                                      "the centre (default 0.1)")
+    rf.add_argument("--max-speed", type=_positive, help="speed limit inside a shot, window widths per second (default 0.6)")
+    rf.add_argument("-o", "--output", required=True, help="write the reframe JSON here")
+    rf.add_argument("--overwrite", action="store_true")
+    rf.add_argument("--json", action="store_true")
+    rf.set_defaults(func=cmd_reframe)
+
+    c = sub.add_parser("check", help="validate a detections, tracks, shots or reframe document")
     c.add_argument("file")
     c.add_argument("--json", action="store_true")
     c.set_defaults(func=cmd_check)

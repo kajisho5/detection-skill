@@ -6,10 +6,13 @@ from typing import Any, Dict, List
 
 from . import __version__
 from .detections import DETECTIONS_SCHEMA
-from .engines import DEFAULT_ENGINE, engine_ids
+from .doctor import SCENEDETECT_RANGE
+from .engines import DEFAULT_ENGINE, DEFAULT_SHOT_ENGINE, SHOT_ENGINES, engine_ids
 from .frames import ENV_DIRS, REQUIRED_TOOLS, VERSION_RANGE
-from .models import ENV_MODELS_DIR, ENV_TESSDATA_DIR, FACE_MODEL_DEFAULT, KNOWN_MODELS, KNOWN_TESSDATA
+from .models import ENV_MODELS_DIR, ENV_TESSDATA_DIR, FACE_MODEL_DEFAULT, KNOWN_MODELS, KNOWN_TESSDATA, SHOT_MODEL_DEFAULT
+from .reframe import METHOD as REFRAME_METHOD, REFRAME_SCHEMA
 from .service import DEFAULT_EVERY, DEFAULT_MAX_FRAMES, DEFAULT_MIN_SCORE, DEFAULT_TIMEOUT
+from .shots import DEFAULT_MAX_FRAMES_SHOTS, SHOT_WIDTH, SHOTS_SCHEMA
 from .tracks import METHOD, TRACKS_SCHEMA
 
 SKILL_ID = "detection"
@@ -37,9 +40,24 @@ TOOLS: List[Dict[str, Any]] = [
                     "padded, even pixels) for ffmpeg-skill redact. A documented heuristic, not identity",
      "argv": ["tracks", "<det.json>", "-o <tracks.json>", "[--min-iou 0.3]", "[--max-shift 1.0]", "[--max-gap S]", "[--pad 0.15]", "[--extend S]",
               "[--window S]", "[--min-hits 1]", "[--overwrite]", "--json"]},
+    {"tool_id": "detection/shots", "role": "measurement", "writes_media": False, "mutates_input": False, "deterministic": True,
+     "description": "Shot boundaries over every frame of a video (frames from ffmpeg-skill look): each shot's start/end in seconds "
+                    "and frames, the boundary kind (cut / gradual), a score and the engine. PySceneDetect (content + adaptive "
+                    "detectors, a blend test for dissolves) by default; TransNetV2 optional",
+     "argv": ["shots", "<video>", f"[--engine {'|'.join(SHOT_ENGINES)}]", "[--threshold X]", "[--min-shot-frames 15]",
+              f"[--width {SHOT_WIDTH}]", f"[--max-frames {DEFAULT_MAX_FRAMES_SHOTS}]", "[--models-dir <dir>]", "[--model <file.onnx>]",
+              "[--ffmpeg-skill <dir>]", f"[--timeout {DEFAULT_TIMEOUT:g}]", "[-o <shots.json>]", "[--overwrite]", "--json"]},
+    {"tool_id": "detection/reframe", "role": "transformation", "writes_media": False, "mutates_input": False, "deterministic": True,
+     "description": "A crop window per sample time for a target aspect (9:16, 1:1, 4:5) from face tracks (object tracks as a "
+                    "fallback), smoothed with a dead zone and a speed limit, switching subject and jumping only at a shot "
+                    "boundary; plus one window per shot. A documented heuristic; it crops nothing",
+     "argv": ["reframe", "<face-tracks.json>", "-o <reframe.json>", "[--aspect 9:16]", "[--shots <shots.json>]",
+              "[--objects <object-tracks.json>]", "[--object-classes person]", "[--dead-zone 0.1]", "[--max-speed 0.6]",
+              "[--overwrite]", "--json"]},
     {"tool_id": "detection/check", "role": "validation", "writes_media": False, "mutates_input": False, "deterministic": True,
-     "description": f"Validate a detections ({DETECTIONS_SCHEMA}) or tracks ({TRACKS_SCHEMA}) document",
-     "argv": ["check", "<det.json|tracks.json>", "--json"]},
+     "description": f"Validate a detections ({DETECTIONS_SCHEMA}), tracks ({TRACKS_SCHEMA}), shots ({SHOTS_SCHEMA}) or reframe "
+                    f"({REFRAME_SCHEMA}) document",
+     "argv": ["check", "<det.json|tracks.json|shots.json|reframe.json>", "--json"]},
 ]
 
 ERRORS = {
@@ -71,15 +89,21 @@ def contract() -> Dict[str, Any]:
         "provides": [{"id": "vision.detect_faces", "lifecycle": "EXPERIMENTAL", "tool_id": "detection/faces"},
                      {"id": "vision.detect_text", "lifecycle": "EXPERIMENTAL", "tool_id": "detection/text"},
                      {"id": "vision.detect_objects", "lifecycle": "EXPERIMENTAL", "tool_id": "detection/objects"},
-                     {"id": "vision.track_boxes", "lifecycle": "EXPERIMENTAL", "tool_id": "detection/tracks"}],
+                     {"id": "vision.track_boxes", "lifecycle": "EXPERIMENTAL", "tool_id": "detection/tracks"},
+                     {"id": "vision.detect_shots", "lifecycle": "EXPERIMENTAL", "tool_id": "detection/shots"},
+                     {"id": "vision.reframe_path", "lifecycle": "EXPERIMENTAL", "tool_id": "detection/reframe"}],
         "dependencies": [
             {"id": "ffmpeg-skill", "kind": "skill", "required": True, "version_range": VERSION_RANGE,
-             "for": ["detection/faces", "detection/text", "detection/objects"], "only_for": "video input (an image needs none)",
+             "for": ["detection/faces", "detection/text", "detection/objects", "detection/shots"],
+             "only_for": "video input (an image needs none)",
              "tools": list(REQUIRED_TOOLS), "located_by": ["--ffmpeg-skill"] + [f"${e}" for e in ENV_DIRS]
              + ["~/.claude/skills/ffmpeg-skill", "./vendor/ffmpeg-skill", "../ffmpeg-skill"]},
-            {"id": "opencv-python-headless", "kind": "python-package", "required": False, "for": ["detection/faces", "detection/objects"],
+            {"id": "opencv-python-headless", "kind": "python-package", "required": False,
+             "for": ["detection/faces", "detection/objects", "detection/shots"],
              "version_range": ">=4.8", "install": "pip install 'detection-skill[faces]'"},
-            {"id": "onnxruntime", "kind": "python-package", "required": False, "for": ["detection/objects"],
+            {"id": "scenedetect", "kind": "python-package", "required": False, "for": ["detection/shots"],
+             "version_range": SCENEDETECT_RANGE, "license": "BSD-3-Clause", "install": "pip install 'detection-skill[shots]'"},
+            {"id": "onnxruntime", "kind": "python-package", "required": False, "for": ["detection/objects", "detection/shots --engine transnetv2"],
              "version_range": ">=1.16", "install": "pip install 'detection-skill[objects]'"},
             {"id": "tesseract", "kind": "binary", "required": False, "for": ["detection/text"], "version_range": ">=5.0 <6.0",
              "located_by": ["$DETECTION_TESSERACT", "PATH"]},
@@ -88,6 +112,10 @@ def contract() -> Dict[str, Any]:
              "located_by": located, "downloaded_at_run_time": False},
             {"id": "yolox_*.onnx", "kind": "model-weights", "required": False, "for": ["detection/objects"],
              "version_range": "any YOLOX COCO ONNX export (sha256 recorded in every result)", "license": "Apache-2.0",
+             "located_by": located, "downloaded_at_run_time": False},
+            {"id": SHOT_MODEL_DEFAULT, "kind": "model-weights", "required": False, "optional_engine": True,
+             "for": ["detection/shots --engine transnetv2"],
+             "version_range": "an ONNX export of TransNetV2 (sha256 recorded in every result)", "license": "MIT",
              "located_by": located, "downloaded_at_run_time": False},
             {"id": "tessdata_best jpn/jpn_vert/eng", "kind": "model-weights", "required": False, "for": ["detection/text"],
              "version_range": "tessdata 4.0+ LSTM (tessdata_best recommended; sha256 recorded in every result)",
@@ -98,7 +126,8 @@ def contract() -> Dict[str, Any]:
                          "decoding video (frames come from ffmpeg-skill look / scenes)",
                          "blurring or redacting (ffmpeg-skill redact, from the tracks rectangles)",
                          "downloading model files (a one-time manual step, see README)", "network access of any kind at run time",
-                         "slide-change detection (slide-sync-skill)", "segmentation masks or pose", "OCR text correction"],
+                         "slide-change detection (slide-sync-skill)", "segmentation masks or pose", "OCR text correction",
+                         "cropping or applying a reframe path (video-editing-skill, ffmpeg-skill crop)"],
         "tools": TOOLS,
         "detections": {"schema": DETECTIONS_SCHEMA, "schema_file": "schemas/detections.schema.json", "provenance": "OBSERVED",
                        "box": "[x, y, w, h] in source pixels, top-left origin; box_norm divided by frame_size",
@@ -106,11 +135,17 @@ def contract() -> Dict[str, Any]:
                        "per_detection_provenance": ["engine", "model", "model_sha256"]},
         "tracks": {"schema": TRACKS_SCHEMA, "schema_file": "schemas/tracks.schema.json", "method": METHOD, "heuristic": True,
                    "identity": False},
-        "engines": {"default": dict(DEFAULT_ENGINE), "registered": engine_ids(),
+        "shots": {"schema": SHOTS_SCHEMA, "schema_file": "schemas/shots.schema.json", "provenance": "OBSERVED",
+                  "frames": "every frame, ffmpeg-skill look --at floor_ms(k / frame_rate)",
+                  "shot": "[start_frame, end_frame] inclusive; start = start_frame / rate, end = (end_frame + 1) / rate",
+                  "boundary_kinds": ["cut", "gradual"], "engines": list(SHOT_ENGINES), "default_engine": DEFAULT_SHOT_ENGINE},
+        "reframe": {"schema": REFRAME_SCHEMA, "schema_file": "schemas/reframe.schema.json", "method": REFRAME_METHOD,
+                    "heuristic": True, "identity": False, "applies_crop": False},
+        "engines": {"default": dict(DEFAULT_ENGINE, shot=DEFAULT_SHOT_ENGINE), "registered": engine_ids(),
                     "known_model_sha256": {k: v["file"] for k, v in KNOWN_MODELS.items()},
                     "known_tessdata_sha256": {k: v["lang"] + " (" + v["variant"] + ")" for k, v in KNOWN_TESSDATA.items()}},
         "defaults": {"every": DEFAULT_EVERY, "max_frames": DEFAULT_MAX_FRAMES, "min_score": dict(DEFAULT_MIN_SCORE),
-                     "lang": "jpn+eng"},
+                     "lang": "jpn+eng", "shots_width": SHOT_WIDTH, "shots_max_frames": DEFAULT_MAX_FRAMES_SHOTS},
         "execution": {"canonical_invocation": ["detection", "<command>", "...", "--json"], "network": False, "shell": False,
                       "engine_process": "worker subprocess, own process group, killed on --timeout",
                       "frames": "ffmpeg-skill look --at T --no-timecode --width <source width>, PNG in a private temp dir",

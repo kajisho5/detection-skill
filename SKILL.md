@@ -1,6 +1,6 @@
 ---
 name: detection-skill
-description: Find faces, text (OCR, Japanese and English, including vertical Japanese) and objects in a video's frames or in an image, as measured boxes with time, pixel box, score and model hash, and link them over time into redact-ready rectangles. Use when asked to find (and then blur) faces, name badges, screens or other things in event footage, read text on slides, screenshots or signs, check where people or objects are in a shot, or plan a reframe or crop around them. Local and offline (YuNet, Tesseract, YOLOX on CPU); frames come from ffmpeg-skill. It never identifies anyone.
+description: Find faces, text (OCR, Japanese and English, including vertical Japanese) and objects in a video's frames or in an image, as measured boxes with time, pixel box, score and model hash, link them over time into redact-ready rectangles, measure shot boundaries (cuts and dissolves) over every frame, and turn face tracks into a reframing path for 9:16, 1:1 or 4:5. Use when asked to find (and then blur) faces, name badges, screens or other things in event footage, read text on slides, screenshots or signs, check where people or objects are in a shot, list a video's shots and cuts, or plan a vertical / square reframe that follows the speaker. Local and offline (YuNet, Tesseract, YOLOX, PySceneDetect on CPU); frames come from ffmpeg-skill. It never identifies anyone.
 ---
 
 # detection-skill
@@ -16,6 +16,8 @@ Run `detection <command> ... --json` (installed by `pip install -e .`; engines b
 | Sparse text in a video frame (signs, badges) | `detection text hall.mp4 --every 2 --psm 11 -o text.json` |
 | People and laptops | `detection objects hall.mp4 --every 2 --classes person,laptop -o objects.json --json` |
 | Boxes over time, rectangles to blur | `detection tracks faces.json -o tracks.json --json` |
+| Shots and cuts, frame accurate | `detection shots talk.mp4 -o shots.json --json` (every frame; `pip install -e '.[shots]'`) |
+| Crop window that follows the speaker | `detection reframe tracks.json --aspect 9:16 --shots shots.json -o reframe.json --json` |
 | Check a file | `detection check faces.json --json` |
 | What this skill declares / needs | `detection contract --json`, `detection doctor --json` |
 
@@ -25,7 +27,8 @@ Model files: `--models-dir` or `DETECTION_MODELS_DIR` (YuNet `face_detection_yun
 
 - **Blur faces or badges** in event footage: `faces` (or `text` / `objects`) -> `tracks` -> for each `tracks[].redact` rectangle, cut `[start, end]` and run ffmpeg-skill `redact --x --y --width --height` on that segment. Sample densely enough for motion (`--every 0.2` to `0.5` for people walking) and keep `--extend` so the blur starts before and ends after the samples that saw the face. For someone walking across the frame add `--window 1` to `tracks`, so each second gets its own rectangle instead of one wide band.
 - **Slide or screen text** for slide-sync, stepcap, chapters or search: `text` on the slide image or on video frames at slide changes (`--scenes`, or times from slide-sync).
-- **Where things are** for reframing or a crop: `objects --classes person` or `faces`, then the agent decides the crop.
+- **Shot list** for the edit view or a cut check: `shots` (cuts on their frame, dissolves and fades as `gradual` with their span). ffmpeg-skill `scenes` is the quick alternative when frame accuracy does not matter. `--engine transnetv2` only when `doctor` shows its model `OK`.
+- **Reframe** to 9:16 / 1:1 / 4:5: `faces --every 0.2` -> `tracks` -> `shots` -> `reframe --aspect 9:16 --shots shots.json` (add `--objects` with person tracks for shots without a visible face). Hand `windows[]` (per time) or `shots[]` (one window per shot, for ffmpeg-skill crop today) to video-editing; this skill crops nothing.
 
 ## Report it honestly
 
@@ -33,6 +36,7 @@ Model files: `--models-dir` or `DETECTION_MODELS_DIR` (YuNet `face_detection_yun
 - **Only the sampled frames were looked at.** Say how frames were sampled (`sampling.method`, `every`, the number of frames). Something on screen between samples can be missed; a face that is only visible for 0.3 s can fall between one-second samples. For redaction, say that the result needs a human check of the rendered video before it is published.
 - **It is a detector with misses and false alarms.** Report counts and scores, not certainty. Small (under about 10 px), blurred, turned-away or partly hidden faces are often missed; the default `--min-score` (faces 0.6, objects 0.3, text 0.3) trades misses for false alarms. If you lowered or raised it, say so.
 - **OCR text is as read, not corrected.** Quote `label` as it is; do not fix spelling silently. Mention the language setting and that Japanese and small or stylised text have more errors. If `engine.files[].variant` is not `tessdata_best`, say the data variant differs from the one the ADR recommends.
+- **Shots and reframe are measurements with limits.** Say which engine found the shots and that `gradual` comes from a blend test (PySceneDetect) or a network (TransNetV2). A reframe is a heuristic: report `counts.subject_outside` and each shot's `subject_inside_fraction`; a subject is a box track, not a person.
 - **Missing engine = say so.** Exit 3 means an engine, model file, tessdata language or ffmpeg-skill is missing; relay `doctor`'s install line. Never report "no faces" when the run did not happen.
 - **Provenance.** Each result names the engine, the model, and the model file's sha256 on every box; keep `detections.json` with any redaction made from it.
 
@@ -40,4 +44,4 @@ Exit codes: `0` ok, `2` invalid input or arguments, `3` an engine, model file, t
 
 ## Not this skill's job
 
-Recognising or naming people, decoding video (ffmpeg-skill `look` / `scenes`), blurring (ffmpeg-skill `redact`), slide-change detection (slide-sync-skill), segmentation masks or pose, correcting OCR text, downloading model files (a one-time manual step, see README).
+Recognising or naming people, cropping or applying a reframe (video-editing-skill, ffmpeg-skill), decoding video (ffmpeg-skill `look` / `scenes`), blurring (ffmpeg-skill `redact`), slide-change detection (slide-sync-skill), segmentation masks or pose, correcting OCR text, downloading model files (a one-time manual step, see README).

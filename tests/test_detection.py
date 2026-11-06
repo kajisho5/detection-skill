@@ -9,7 +9,8 @@ Tests that need more skip with the reason, and run where it is available:
 - the AI-video-production-OS checkout (AI_VIDEO_PRODUCTION_OS_DIR or ../AI-video-production-OS): registry conformance.
 - real engines: faces need opencv + YuNet in DETECTION_MODELS_DIR; objects need onnxruntime + opencv + a yolox_*.onnx
   in DETECTION_MODELS_DIR; text needs tesseract with jpn/jpn_vert/eng (DETECTION_TESSDATA_DIR or tesseract's own),
-  Pillow and a Japanese font to render the fixture.
+  Pillow and a Japanese font to render the fixture; shots need scenedetect + opencv + ffmpeg + ffmpeg-skill (fixtures
+  rendered with ffmpeg's lavfi sources); reframe on real footage needs all of faces and shots.
 
 Fixture images (tests/fixtures): astronaut.jpg (NASA portrait of Eileen Collins, public domain), chelsea.jpg (CC0),
 coffee.jpg (CC0), all as shipped in scikit-image's data module. Hand-annotated boxes are below (ASTRONAUT_FACE etc.).
@@ -51,7 +52,12 @@ from detection_skill.metrics import cer, match_boxes  # noqa: E402
 from detection_skill.models import KNOWN_MODELS, find_tesseract, inspect_models, tessdata_dir, tessdata_langs  # noqa: E402
 from detection_skill.service import detect, run_engine, run_process_group  # noqa: E402
 from detection_skill.tracks import TRACKS_SCHEMA, make_tracks, redact_rect, validate_tracks  # noqa: E402
-from fake_engine import MODEL_SHA, ScriptedEngine, png_size, write_png  # noqa: E402
+from detection_skill.shots import SHOTS_SCHEMA, detect_shots, validate_shots  # noqa: E402
+from detection_skill.reframe import REFRAME_SCHEMA, make_reframe, parse_aspect, validate_reframe, window_size  # noqa: E402
+from detection_skill.engines.shotcore import (blend_runs, merge_boundaries, transnet_boundaries,  # noqa: E402
+                                              transnet_windows)
+from detection_skill.frames import seek_time  # noqa: E402
+from fake_engine import MODEL_SHA, ScriptedEngine, ScriptedShotEngine, png_size, write_png  # noqa: E402
 
 FIXTURES = ROOT / "tests" / "fixtures"
 FAKE_FFMPEG_SKILL = str(ROOT / "tests" / "fake_ffmpeg_skill")
@@ -73,6 +79,7 @@ MODELS_DIR = os.environ.get("DETECTION_MODELS_DIR")
 HAVE_CV2 = importlib.util.find_spec("cv2") is not None and importlib.util.find_spec("numpy") is not None
 HAVE_ORT = importlib.util.find_spec("onnxruntime") is not None
 HAVE_PIL = importlib.util.find_spec("PIL") is not None
+HAVE_SCENEDETECT = importlib.util.find_spec("scenedetect") is not None
 REAL_VIDEO = HAVE_FFMPEG and FFMPEG_SKILL_DIR is not None
 REAL_VIDEO_WHY = "needs ffmpeg on PATH and an ffmpeg-skill checkout (FFMPEG_SKILL_DIR or ../ffmpeg-skill)"
 
@@ -166,6 +173,11 @@ class DetectionsTests(TmpCase):
         self.assertEqual(set(det["required"]), {"t", "kind", "box", "box_norm", "score", "label", "engine", "model", "model_sha256"})
         tracks = json.loads((ROOT / "schemas" / "tracks.schema.json").read_text(encoding="utf-8"))
         self.assertEqual(tracks["properties"]["schema"]["const"], TRACKS_SCHEMA)
+        from detection_skill import reframe as rf_mod, shots as shots_mod
+        for name, const, required in (("shots", SHOTS_SCHEMA, shots_mod.REQUIRED), ("reframe", REFRAME_SCHEMA, rf_mod.REQUIRED)):
+            sch = json.loads((ROOT / "schemas" / f"{name}.schema.json").read_text(encoding="utf-8"))
+            self.assertEqual(sch["properties"]["schema"]["const"], const)
+            self.assertEqual(set(sch["required"]), set(required))
 
     def test_validator_rejects(self):
         base = self.video_doc()
@@ -473,6 +485,298 @@ class TracksTests(TmpCase):
             self.assertFalse(validate_tracks(d).ok)
 
 
+# ---- shots ----------------------------------------------------------------------------------------
+def scripted_cut_and_dissolve(n):
+    return [{"frame": 30, "kind": "cut", "score": 0.9, "metric": {"content_val": 80.0}},
+            {"frame": 60, "kind": "gradual", "score": 0.95, "start_frame": 55, "end_frame": 65, "metric": {}}]
+
+
+class ShotsTests(TmpCase):
+    def shots_doc(self, boundaries=scripted_cut_and_dissolve, **kw):
+        video = fake_video(self.tmp, duration=4.0, fps=25.0)
+        return detect_shots(video, engine=ScriptedShotEngine(boundaries), ffmpeg_skill=FAKE_FFMPEG_SKILL, **kw)
+
+    def test_seek_time_lands_on_the_frame(self):
+        self.assertEqual((seek_time(0, 25.0), seek_time(1, 25.0), seek_time(2, 30000 / 1001)), (0.0, 0.04, 0.066))
+        for rate in (25.0, 30000 / 1001, 24000 / 1001, 50.0, 60000 / 1001):
+            for k in range(1, 2000):
+                t = seek_time(k, rate)
+                self.assertLessEqual(t, k / rate + 1e-9)       # not past frame k ...
+                self.assertGreater(t, (k - 1) / rate + 1e-9)    # ... and past frame k - 1: look returns frame k
+
+    def test_every_frame_is_asked_for_at_the_reduced_width(self):
+        log = os.path.join(self.tmp, "calls.log")
+        os.environ["FAKE_FFMPEG_SKILL_LOG"] = log
+        self.addCleanup(os.environ.pop, "FAKE_FFMPEG_SKILL_LOG", None)
+        doc = self.shots_doc()
+        looks = [json.loads(line) for line in Path(log).read_text(encoding="utf-8").splitlines() if "look.py" in line]
+        asked = [float(c[i + 1]) for c in looks for i, a in enumerate(c) if a == "--at"]
+        self.assertEqual(asked, [seek_time(k, 25.0) for k in range(100)])
+        self.assertTrue(all(c[c.index("--width") + 1] == "320" and "--no-timecode" in c for c in looks))
+        self.assertEqual(doc["frames"]["frame_count"], 100)
+        self.assertEqual(doc["frames"]["extracted_size"], {"width": 320, "height": 180})
+
+    def test_document_shots_cover_every_frame(self):
+        doc = self.shots_doc()
+        rep = validate_shots(doc)
+        self.assertTrue(rep.ok, rep.errors)
+        self.assertEqual(doc["schema"], SHOTS_SCHEMA)
+        self.assertEqual(doc["counts"], {"frames": 100, "shots": 3, "boundaries": 2, "cuts": 1, "gradual": 1})
+        self.assertEqual([(s["start_frame"], s["end_frame"], s["starts_with"]) for s in doc["shots"]],
+                         [(0, 29, "start"), (30, 59, "cut"), (60, 99, "gradual")])
+        self.assertEqual([(s["start"], s["end"]) for s in doc["shots"]], [(0.0, 1.2), (1.2, 2.4), (2.4, 4.0)])
+        g = doc["boundaries"][1]
+        self.assertEqual((g["t"], g["transition"]["start_frame"], g["transition"]["end_frame"], g["transition"]["frames"]),
+                         (2.4, 55, 65, 11))
+        self.assertIsNone(doc["boundaries"][0]["transition"])
+        self.assertTrue(all(s["engine"] == "scripted-shots" for s in doc["shots"]))
+        self.assertIsNone(doc["engine"]["model_sha256"])
+
+    def test_no_boundary_is_one_shot(self):
+        doc = self.shots_doc(lambda n: [])
+        self.assertEqual([(s["start_frame"], s["end_frame"]) for s in doc["shots"]], [(0, 99)])
+        self.assertTrue(validate_shots(doc).ok)
+
+    def test_validator_rejects(self):
+        base = self.shots_doc()
+        cases = {
+            "gap": lambda d: d["shots"][1].__setitem__("start_frame", 31),
+            "count": lambda d: d["counts"].__setitem__("cuts", 2),
+            "kind": lambda d: d["boundaries"][0].__setitem__("kind", "wipe"),
+            "score": lambda d: d["boundaries"][0].__setitem__("score", 1.5),
+            "first score": lambda d: d["shots"][0].__setitem__("score", 0.5),
+            "engine": lambda d: d["shots"][2].__setitem__("engine", "other"),
+            "cut transition": lambda d: d["boundaries"][0].__setitem__("transition", {"start_frame": 1, "end_frame": 2}),
+            "t": lambda d: d["boundaries"][0].__setitem__("t", 9.0),
+            "end": lambda d: d["shots"][2].__setitem__("end_frame", 98),
+            "abs path": lambda d: d["source"].__setitem__("filename", "/home/user/clip.mp4"),
+        }
+        for name, mutate in cases.items():
+            d = copy.deepcopy(base)
+            mutate(d)
+            self.assertFalse(validate_shots(d).ok, name)
+
+    def test_engine_frame_count_and_argument_errors(self):
+        video = fake_video(self.tmp, duration=4.0)
+        with self.assertRaises(DetectionError) as cm:
+            detect_shots(video, engine=ScriptedShotEngine(frames_seen=99), ffmpeg_skill=FAKE_FFMPEG_SKILL)
+        self.assertEqual(cm.exception.code, "INVALID_RESULT")
+        with self.assertRaises(DetectionError) as cm:
+            detect_shots(video, engine=ScriptedShotEngine(), max_frames=50, ffmpeg_skill=FAKE_FFMPEG_SKILL)
+        self.assertEqual(cm.exception.code, "INVALID_ARGUMENT")
+        img = os.path.join(self.tmp, "a.png")
+        write_png(img, 64, 64)
+        with self.assertRaises(DetectionError) as cm:
+            detect_shots(img, engine=ScriptedShotEngine())
+        self.assertEqual(cm.exception.code, "INVALID_ARGUMENT")
+        with self.assertRaises(DetectionError) as cm:
+            detect_shots(video, engine=ScriptedEngine("face"), ffmpeg_skill=FAKE_FFMPEG_SKILL)
+        self.assertEqual(cm.exception.code, "INVALID_ARGUMENT")
+        with self.assertRaises(DetectionError) as cm:
+            detect_shots(video, engine_id="scdet")
+        self.assertEqual(cm.exception.code, "INVALID_ARGUMENT")
+
+    def test_transnetv2_without_its_model_exits_3_and_doctor_says_missing_optional(self):
+        video = fake_video(self.tmp)
+        empty = os.path.join(self.tmp, "models")
+        os.mkdir(empty)
+        rc, doc = run_cli("shots", video, "--engine", "transnetv2", "--models-dir", empty, "--ffmpeg-skill", FAKE_FFMPEG_SKILL, "--json")
+        self.assertEqual(rc, 3, doc)
+        self.assertIn(doc["error"]["code"], ("MODEL_NOT_FOUND", "ENGINE_UNAVAILABLE"))
+        d = doctor(models_dir=empty, ffmpeg_skill=FAKE_FFMPEG_SKILL)
+        tn = d["checks"]["transnetv2_model"]
+        self.assertEqual((tn["status"], tn["optional"]), ("MISSING", True))
+        self.assertIn("TransNetV2", tn["install"])
+        self.assertFalse(any(p.startswith("transnetv2_model") for p in d["problems"]))
+        self.assertIn("transnetv2_model: MISSING (optional)", d["notes"])
+        self.assertNotIn("shots_transnetv2", d["ready"])
+        self.assertFalse(d["optional_ready"]["shots_transnetv2"])
+        have = all(importlib.util.find_spec(m) is not None for m in ("scenedetect", "cv2", "numpy"))
+        self.assertEqual(d["ready"]["shots"], have and d["checks"]["scenedetect"]["status"] == "OK")
+
+    def test_blend_runs_and_merge(self):
+        passing = [(f, 40.0, 0.05) for f in range(73, 88)] + [(100, 30.0, 0.1)]  # one long run, one lone frame
+        g = blend_runs(passing, 4, min_core=3, frame_count=225)
+        self.assertEqual([(b["frame"], b["start_frame"], b["end_frame"], b["kind"]) for b in g], [(80, 69, 91, "gradual")])
+        self.assertEqual(blend_runs([(f, 40.0, 0.05) for f in range(2, 10)], 4), [])  # a fade-in at the start is no boundary
+        cuts = [{"frame": 50, "kind": "cut", "score": 1.0}, {"frame": 51, "kind": "cut", "score": 0.4},
+                {"frame": 71, "kind": "cut", "score": 0.5}, {"frame": 120, "kind": "cut", "score": 0.9},
+                {"frame": 125, "kind": "cut", "score": 0.95}]
+        out, dropped = merge_boundaries(cuts, g, min_shot_frames=15)
+        self.assertEqual([(b["frame"], b["kind"]) for b in out], [(50, "cut"), (80, "gradual"), (125, "cut")])
+        self.assertEqual(dropped, 3)  # 51: same cut; 71: inside the dissolve; 120: 5 frames from a stronger one
+
+    def test_transnet_windows_and_boundaries(self):
+        for n in (1, 49, 50, 51, 237):
+            wins = transnet_windows(n)
+            self.assertTrue(all(len(w) == 100 for w in wins))
+            middle = [i for w in wins for i in w[25:75]]
+            self.assertEqual(middle[:n], list(range(n)))
+        single = [0.01] * 100
+        single[39] = 0.97                     # a cut: the frame after the peak starts the next shot
+        for k in range(60, 70):
+            single[k] = 0.7                   # a dissolve
+        b = transnet_boundaries(single, None, 0.5)
+        self.assertEqual([(x["frame"], x["kind"]) for x in b], [(40, "cut"), (64, "gradual")])
+        self.assertEqual((b[1]["start_frame"], b[1]["end_frame"]), (60, 69))
+
+
+# ---- reframe --------------------------------------------------------------------------------------
+def walker(speed=60.0, start=40.0, jump_at=None, jitter=0.0):
+    """One face box crossing a 640x360 frame at `speed` px/s; after `jump_at` seconds it is elsewhere (a new shot)."""
+    def boxes(t, w, h):
+        if jump_at is not None and t >= jump_at:
+            return [{"box": [520.0, 120.0, 40.0, 48.0], "score": 0.9}]
+        x = start + speed * t + (jitter if int(round(t * 5)) % 2 else -jitter)
+        return [{"box": [x, 100.0, 40.0, 48.0], "score": 0.9}]
+    return boxes
+
+
+def shots_for(tmp, video, cut_frames):
+    return detect_shots(video, engine=ScriptedShotEngine(lambda n: [{"frame": f, "kind": "cut", "score": 1.0} for f in cut_frames]),
+                        ffmpeg_skill=FAKE_FFMPEG_SKILL)
+
+
+def speed_ok(doc):
+    v = doc["parameters"]["max_speed_px_per_s"]
+    ws = doc["windows"]
+    return all(abs(b["x"] - a["x"]) <= v * (b["t"] - a["t"]) + 2 and abs(b["y"] - a["y"]) <= v * (b["t"] - a["t"]) + 2
+               for a, b in zip(ws, ws[1:]) if a["shot"] == b["shot"])
+
+
+class ReframeTests(TmpCase):
+    def face_tracks(self, boxes, duration=8.0, kind="face", name="clip.mp4"):
+        video = fake_video(self.tmp, name=name, duration=duration)
+        det = detect(kind, video, every=0.2, engine=ScriptedEngine(kind, boxes), ffmpeg_skill=FAKE_FFMPEG_SKILL)
+        return video, make_tracks(det)
+
+    def test_window_sizes(self):
+        self.assertEqual(window_size(640, 360, parse_aspect("9:16")[1]), (202, 360))
+        self.assertEqual(window_size(640, 360, parse_aspect("1:1")[1]), (360, 360))
+        self.assertEqual(window_size(640, 360, parse_aspect("4:5")[1]), (288, 360))
+        self.assertEqual(window_size(360, 640, parse_aspect("16:9")[1]), (360, 202))
+        for bad in ("", "9", "0:16", "9:16:1", "abc"):
+            with self.assertRaises(DetectionError):
+                parse_aspect(bad)
+
+    def test_walking_subject_stays_inside_without_jumps(self):
+        _video, tr = self.face_tracks(walker(60.0))
+        for aspect in ("9:16", "1:1", "4:5"):
+            doc = make_reframe(tr, aspect=aspect)
+            rep = validate_reframe(doc)
+            self.assertTrue(rep.ok, rep.errors)
+            self.assertEqual(doc["schema"], REFRAME_SCHEMA)
+            self.assertEqual(doc["counts"]["windows"], 40)
+            self.assertEqual(doc["counts"]["subject_outside"], 0, aspect)
+            self.assertTrue(all(w["subject_inside"] for w in doc["windows"]), aspect)
+            self.assertTrue(speed_ok(doc), aspect)
+            self.assertEqual([s["to"] for s in doc["switches"]], ["face/track_001"])
+            self.assertTrue(doc["method"]["heuristic"])
+            self.assertFalse(doc["method"]["identity"])
+        doc = make_reframe(tr, aspect="9:16")
+        self.assertGreater(doc["windows"][-1]["x"], doc["windows"][0]["x"])  # it followed the walk
+        self.assertEqual(len(doc["shots"]), 1)
+        self.assertIn("no --shots", " ".join(doc["warnings"]))
+
+    def test_speed_limit_binds_and_is_reported(self):
+        _video, tr = self.face_tracks(walker(120.0))
+        doc = make_reframe(tr, aspect="9:16", max_speed=0.1)  # 20 px/s for a 120 px/s walk
+        self.assertTrue(validate_reframe(doc).ok)
+        self.assertTrue(speed_ok(doc))
+        self.assertGreater(doc["counts"]["subject_outside"], 0)
+        self.assertTrue(any("raise --max-speed" in w for w in doc["warnings"]))
+
+    def test_dead_zone_holds_still_on_jitter(self):
+        _video, tr = self.face_tracks(lambda t, w, h: [{"box": [300.0 + (6 if int(round(t * 5)) % 2 else -6), 100.0, 40.0, 48.0],
+                                                        "score": 0.9}])
+        xs = {w["x"] for w in make_reframe(tr, aspect="9:16")["windows"]}
+        self.assertEqual(len(xs), 1)
+        self.assertGreater(len({w["x"] for w in make_reframe(tr, aspect="9:16", dead_zone=0.0)["windows"]}), 1)
+
+    def test_shot_boundary_allows_the_jump_and_switches_subject(self):
+        video, tr = self.face_tracks(walker(40.0, jump_at=4.0))
+        shots = shots_for(self.tmp, video, [100])  # 4.0 s at 25 fps
+        doc = make_reframe(tr, aspect="9:16", shots=shots)
+        self.assertTrue(validate_reframe(doc).ok, validate_reframe(doc).errors)
+        self.assertEqual([w["shot"] for w in doc["windows"]], [0] * 20 + [1] * 20)
+        a, b = doc["windows"][19], doc["windows"][20]
+        self.assertGreater(abs(b["x"] - a["x"]), doc["parameters"]["max_speed_px_per_s"] * 0.2 + 2)  # jumped at the cut
+        self.assertTrue(speed_ok(doc))
+        self.assertEqual([(s["shot"], s["from"], s["to"]) for s in doc["switches"]],
+                         [(0, None, "face/track_001"), (1, "face/track_001", "face/track_002")])
+        self.assertIn("shot boundary (cut)", doc["switches"][1]["reason"])
+        self.assertEqual([s["subject"] for s in doc["shots"]], ["face/track_001", "face/track_002"])
+        self.assertEqual(doc["shots"][1]["subject_inside_fraction"], 1.0)
+        self.assertEqual(doc["inputs"]["shots"]["shots"], 2)
+
+    def test_object_fallback_and_hold(self):
+        video, faces = self.face_tracks(lambda t, w, h: [{"box": [100.0, 100.0, 40.0, 48.0], "score": 0.9}] if t < 4 else [])
+        det = detect("object", video, every=0.2, engine=ScriptedEngine("object", lambda t, w, h: [
+            {"box": [400.0, 60.0, 80.0, 250.0], "score": 0.8, "label": "person"},
+            {"box": [10.0, 10.0, 60.0, 60.0], "score": 0.9, "label": "cup"}] if t >= 5 else []), ffmpeg_skill=FAKE_FFMPEG_SKILL)
+        objects = make_tracks(det)
+        person = next(t["id"] for t in objects["tracks"] if t["label"] == "person")
+        doc = make_reframe(faces, objects=objects, aspect="9:16")
+        self.assertTrue(validate_reframe(doc).ok, validate_reframe(doc).errors)
+        self.assertEqual([s["to"] for s in doc["switches"]], ["face/track_001", None, "object/" + person])  # not the cup
+        self.assertIn("no face or object in view", doc["switches"][1]["reason"])
+        self.assertIn("(no face in view)", doc["switches"][2]["reason"])
+        held = [w["x"] for w in doc["windows"] if 4.0 <= w["t"] < 5.0]
+        self.assertEqual(len(set(held)), 1)
+        self.assertTrue(speed_ok(doc))
+        no_obj = make_reframe(faces, aspect="9:16")
+        self.assertEqual([s["to"] for s in no_obj["switches"]], ["face/track_001", None])
+
+    def test_refuses_mismatched_inputs_and_validator_rejects(self):
+        _v1, tr = self.face_tracks(walker())
+        other_video = fake_video(self.tmp, name="other.mp4", duration=8.0, width=640, height=360, fps=24.0)
+        other = shots_for(self.tmp, other_video, [])
+        with self.assertRaises(DetectionError) as cm:
+            make_reframe(tr, shots=other)
+        self.assertEqual(cm.exception.code, "INVALID_ARGUMENT")
+        with self.assertRaises(DetectionError) as cm:
+            make_reframe(tr, objects=tr)
+        self.assertEqual(cm.exception.code, "INVALID_ARGUMENT")
+        base = make_reframe(tr, aspect="9:16")
+        cases = {
+            "jump": lambda d: d["windows"][5].__setitem__("x", d["windows"][4]["x"] + 200),
+            "odd": lambda d: d["windows"][0].__setitem__("x", 3),
+            "outside": lambda d: d["windows"][0].__setitem__("x", 600),
+            "size": lambda d: d["windows"][0].__setitem__("width", 100),
+            "identity": lambda d: d["method"].__setitem__("identity", True),
+            "subject": lambda d: d["windows"][0].__setitem__("subject", "Alice"),
+            "counts": lambda d: d["counts"].__setitem__("subject_outside", 3),
+            "reason": lambda d: d["switches"][0].__setitem__("reason", ""),
+        }
+        for name, mutate in cases.items():
+            d = copy.deepcopy(base)
+            mutate(d)
+            self.assertFalse(validate_reframe(d).ok, name)
+
+    def test_cli_shots_check_and_reframe(self):
+        video, tr = self.face_tracks(walker(40.0, jump_at=4.0))
+        shots = shots_for(self.tmp, video, [100])
+        paths = {}
+        for name, doc in (("tracks", tr), ("shots", shots)):
+            paths[name] = os.path.join(self.tmp, f"{name}.json")
+            Path(paths[name]).write_text(json.dumps(doc), encoding="utf-8")
+        rc, out = run_cli("check", paths["shots"], "--json")
+        self.assertEqual((rc, out["schema"]), (0, SHOTS_SCHEMA))
+        rf = os.path.join(self.tmp, "reframe.json")
+        rc, out = run_cli("reframe", paths["tracks"], "--shots", paths["shots"], "--aspect", "1:1", "-o", rf, "--json")
+        self.assertEqual((rc, out["window"]), (0, {"width": 360, "height": 360}), out)
+        self.assertTrue(out["inputs"]["faces"]["fingerprint"].startswith("sha256:"))
+        self.assertEqual(out["inputs"]["shots"]["file"], "shots.json")
+        rc, out = run_cli("check", rf, "--json")
+        self.assertEqual((rc, out["schema"], out["ok"]), (0, REFRAME_SCHEMA, True))
+        rc, out = run_cli("reframe", paths["tracks"], "-o", rf, "--json")
+        self.assertEqual((rc, out["error"]["code"]), (2, "OUTPUT_EXISTS"))
+        rc, out = run_cli("reframe", paths["tracks"], "--shots", paths["shots"], "-o", paths["shots"], "--overwrite", "--json")
+        self.assertEqual((rc, out["error"]["code"]), (2, "OUTPUT_IS_INPUT"))
+        rc, out = run_cli("reframe", paths["tracks"], "--aspect", "wide", "-o", os.path.join(self.tmp, "r2.json"), "--json")
+        self.assertEqual((rc, out["error"]["code"]), (2, "INVALID_ARGUMENT"))
+
+
 # ---- small pieces ---------------------------------------------------------------------------------
 class PieceTests(unittest.TestCase):
     def test_boxes(self):
@@ -565,7 +869,8 @@ class ContractTests(unittest.TestCase):
             self.assertIn(k, c)
         self.assertEqual(c["version"], __version__)
         self.assertEqual({p["id"] for p in c["provides"]},
-                         {"vision.detect_faces", "vision.detect_text", "vision.detect_objects", "vision.track_boxes"})
+                         {"vision.detect_faces", "vision.detect_text", "vision.detect_objects", "vision.track_boxes",
+                          "vision.detect_shots", "vision.reframe_path"})
         tool_ids = {t["tool_id"] for t in TOOLS}
         for p in c["provides"]:
             self.assertEqual(set(p), {"id", "lifecycle", "tool_id"})
@@ -778,6 +1083,103 @@ class RealTextTests(TmpCase):
         print(f"\n  Tesseract eng via ffmpeg-skill look: CER {score:.4f}", end="")
         self.assertLessEqual(score, self.CER_EN)
         self.assertEqual(doc["frames"][0]["t"], 1.0)
+
+
+# ---- shots and reframe on real frames -------------------------------------------------------------
+SHOTS_WHY = "needs scenedetect and opencv (pip install '.[shots]'), ffmpeg and an ffmpeg-skill checkout"
+# 320x180 at 25 fps, 225 frames: six lavfi sources (several of them moving), joined by three hard cuts and two
+# cross-dissolves (ffmpeg xfade). Ground truth from the construction: cuts at frames 50, 120, 185; dissolves blend
+# frames 70-89 (0.8 s) and 135-159 (1.0 s).
+SHOT_SOURCES = ["testsrc2=s=320x180:r=25:d=2", "smptehdbars=s=320x180:r=25:d=1.6", "mandelbrot=s=320x180:r=25,trim=duration=2",
+                "gradients=s=320x180:r=25:d=1.6:speed=0.05", "testsrc=s=320x180:r=25:d=2", "yuvtestsrc=s=320x180:r=25:d=1.6"]
+SHOT_CUTS = [50, 120, 185]
+SHOT_DISSOLVES = [(70, 89), (135, 159)]
+
+
+def render_shots_fixture(path):
+    norm = "format=yuv420p,setsar=1,fps=25,settb=1/25,setpts=N"
+    graph = ";".join(f"[{i}]{norm}[s{i}]" for i in range(6)) + (
+        ";[s0][s1]concat=n=2,settb=1/25,setpts=N[a];[a][s2]xfade=transition=fade:duration=0.8:offset=2.8,settb=1/25,setpts=N[b]"
+        ";[b][s3]concat=n=2,settb=1/25,setpts=N[c];[c][s4]xfade=transition=fade:duration=1.0:offset=5.4,settb=1/25,setpts=N[d]"
+        ";[d][s5]concat=n=2,format=yuv420p[out]")
+    argv = ["ffmpeg", "-v", "error", "-y"]
+    for src in SHOT_SOURCES:
+        argv += ["-f", "lavfi", "-i", src]
+    subprocess.run(argv + ["-filter_complex", graph, "-map", "[out]", "-r", "25", "-c:v", "libx264", "-crf", "18", "-g", "50", path],
+                   check=True)
+
+
+@unittest.skipUnless(HAVE_SCENEDETECT and HAVE_CV2 and REAL_VIDEO, SHOTS_WHY)
+class RealShotsTests(TmpCase):
+    def test_cuts_within_one_frame_and_dissolves_found(self):
+        video = os.path.join(self.tmp, "shots.mp4")
+        render_shots_fixture(video)
+        doc = detect_shots(video, ffmpeg_skill=str(FFMPEG_SKILL_DIR))
+        self.assertTrue(validate_shots(doc).ok, validate_shots(doc).errors)
+        self.assertEqual(doc["frames"]["frame_count"], 225)
+        cuts = [b["frame"] for b in doc["boundaries"] if b["kind"] == "cut"]
+        gradual = [b for b in doc["boundaries"] if b["kind"] == "gradual"]
+        print(f"\n  PySceneDetect {doc['engine']['version']}: cuts {cuts} (truth {SHOT_CUTS}); gradual "
+              f"{[(b['frame'], b['transition']['start_frame'], b['transition']['end_frame']) for b in gradual]} "
+              f"(truth {SHOT_DISSOLVES}); {doc['engine']['engine_seconds']}s engine, {doc['processing_seconds']}s total", end="")
+        self.assertEqual(len(cuts), len(SHOT_CUTS), cuts)  # no missed and no extra hard cut
+        for want, got in zip(SHOT_CUTS, cuts):
+            self.assertLessEqual(abs(got - want), 1, (want, got))
+        self.assertEqual(len(gradual), len(SHOT_DISSOLVES))
+        for (a, z), b in zip(SHOT_DISSOLVES, gradual):
+            self.assertTrue(a <= b["frame"] <= z, (a, z, b["frame"]))
+            self.assertLessEqual(abs(b["transition"]["start_frame"] - a), 3)
+            self.assertLessEqual(abs(b["transition"]["end_frame"] - z), 3)
+        self.assertEqual(doc["counts"]["shots"], 6)
+        self.assertEqual(doc["engine"]["id"], "pyscenedetect")
+        # TransNetV2 is optional: without its model file doctor says MISSING and the op above still ran.
+        d = doctor(models_dir=MODELS_DIR, ffmpeg_skill=str(FFMPEG_SKILL_DIR))
+        if not _models_file(lambda n: n.startswith("transnetv2") and n.endswith(".onnx")):
+            self.assertEqual(d["checks"]["transnetv2_model"]["status"], "MISSING")
+        self.assertTrue(d["ready"]["shots"])
+
+
+@unittest.skipUnless(HAVE_CV2 and YUNET_FILE and HAVE_SCENEDETECT and REAL_VIDEO,
+                     "needs YuNet in DETECTION_MODELS_DIR, opencv, scenedetect, ffmpeg and an ffmpeg-skill checkout")
+class RealReframeTests(TmpCase):
+    def test_walking_speaker_stays_inside_the_window(self):
+        # 960x540, 8 s: a face walks left to right at 105 px/s for 6 s, then a cut to a second shot where a face stands
+        # on the left.
+        video = os.path.join(self.tmp, "walk.mp4")
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "color=c=gray:s=960x540:r=25:d=6",
+                        "-f", "lavfi", "-i", "color=c=0x305070:s=960x540:r=25:d=2", "-loop", "1", "-i", str(FIXTURES / "astronaut.jpg"),
+                        "-filter_complex", "[2:v]scale=256:256,split[a][b];[0:v][a]overlay=x='40+t*105':y=140:shortest=1[s0];"
+                        "[1:v][b]overlay=x=60:y=200:shortest=1[s1];[s0][s1]concat=n=2,format=yuv420p[out]",
+                        "-map", "[out]", "-r", "25", video], check=True)
+        det = detect("face", video, every=0.2, models_dir=MODELS_DIR, model=YUNET_FILE, ffmpeg_skill=str(FFMPEG_SKILL_DIR))
+        tracks = make_tracks(det)
+        shots = detect_shots(video, ffmpeg_skill=str(FFMPEG_SKILL_DIR))
+        self.assertEqual([b["frame"] for b in shots["boundaries"]], [150])
+        for aspect in ("9:16", "1:1", "4:5"):
+            doc = make_reframe(tracks, aspect=aspect, shots=shots)
+            rep = validate_reframe(doc)
+            self.assertTrue(rep.ok, rep.errors)
+            ws = doc["windows"]
+            faces_at = {fr["t"]: fr["detections"] for fr in det["frames"]}
+            inside = 0
+            for w in ws:
+                for d in faces_at[w["t"]]:
+                    x, y, bw, bh = d["box"]
+                    inside += x >= w["x"] and y >= w["y"] and x + bw <= w["x"] + w["width"] and y + bh <= w["y"] + w["height"]
+            n_faces = sum(len(v) for v in faces_at.values())
+            v = doc["parameters"]["max_speed_px_per_s"]
+            worst = max(abs(b["x"] - a["x"]) / (b["t"] - a["t"]) for a, b in zip(ws, ws[1:]) if a["shot"] == b["shot"])
+            print(f"\n  reframe {aspect} {doc['window']['width']}x{doc['window']['height']}: face inside the window in "
+                  f"{inside}/{n_faces} detected faces over {len(ws)} samples; fastest move {worst:.0f} px/s (limit {v:.0f}); "
+                  f"switches {[(s['t'], s['to']) for s in doc['switches']]}", end="")
+            self.assertEqual(len(ws), len(det["frames"]))
+            self.assertGreaterEqual(n_faces, len(ws) - 1)
+            self.assertEqual(inside, n_faces, aspect)
+            self.assertTrue(speed_ok(doc), aspect)
+            self.assertLessEqual(worst, v + 2 / 0.2)
+            self.assertEqual([s["shot"] for s in doc["switches"]], [0, 1])
+            self.assertEqual(ws[0]["shot"], 0)
+            self.assertEqual(ws[-1]["shot"], 1)
 
 
 if __name__ == "__main__":

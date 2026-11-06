@@ -174,7 +174,24 @@ def probe_video(skill: FfmpegSkill, video: str, *, runner: Runner = subprocess_r
         fps = float(fps) if fps else None
     except (TypeError, ValueError):
         fps = None
-    return {"duration": duration, "width": w, "height": h, "fps": fps}
+    nb = v.get("nb_frames")
+    vdur = v.get("duration")
+    return {"duration": duration, "width": w, "height": h, "fps": fps, "frame_rate": _rate(v.get("r_frame_rate")) or fps,
+            "nb_frames": int(nb) if isinstance(nb, (int, float)) and not isinstance(nb, bool) and nb > 0 else None,
+            "video_duration": float(vdur) if isinstance(vdur, (int, float)) and not isinstance(vdur, bool) and vdur > 0 else None,
+            "variable_frame_rate": bool(v.get("variable_frame_rate_suspected"))}
+
+
+def _rate(value: Any) -> Optional[float]:
+    """'30000/1001' -> 29.97002997...: the exact frame rate (probe's `fps` is rounded)."""
+    if not isinstance(value, str) or "/" not in value:
+        return None
+    num, _, den = value.partition("/")
+    try:
+        r = float(num) / float(den)
+    except (ValueError, ZeroDivisionError):
+        return None
+    return r if math.isfinite(r) and 0 < r <= 1000 else None
 
 
 def last_time(duration: float, fps: Optional[float]) -> float:
@@ -253,3 +270,22 @@ def extract_frames(skill: FfmpegSkill, video: str, times: List[float], width: in
                 raise DetectionError("FRAME_EXTRACTION_FAILED", f"ffmpeg-skill look wrote no frame for t={t:.3f}s")
             frames.append({"index": len(frames), "t": t, "path": path})
     return frames
+
+
+# ---- every frame (shots) ------------------------------------------------------------------------------
+def frame_count(facts: Dict[str, Any]) -> int:
+    """Number of frames: the stream's nb_frames when probe reports it, else floor(duration x frame rate)."""
+    if facts.get("nb_frames"):
+        return int(facts["nb_frames"])
+    rate = facts.get("frame_rate") or facts.get("fps")
+    if not rate:
+        raise DetectionError("UNSUPPORTED_MEDIA", "frame rate unknown (ffmpeg-skill probe): shots need every frame")
+    duration = facts.get("video_duration") or facts["duration"]
+    return max(1, int(math.floor(duration * rate + 1e-6)))
+
+
+def seek_time(frame: int, rate: float) -> float:
+    """The `look --at` time that returns frame `frame` (0-based): its presentation time rounded DOWN to the
+    millisecond. `look` seeks with `-ss T` before the input, which returns the first frame whose time is >= T, so
+    T must not be rounded up past the frame (measured on 25 and 29.97 fps H.264, ffmpeg 6.1)."""
+    return math.floor(frame / float(rate) * 1000.0 + 1e-6) / 1000.0

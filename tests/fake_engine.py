@@ -70,3 +70,26 @@ class ScriptedEngine(DetectionEngine):
             dets = [d for d in self.boxes(fr["t"], w, h) if d.get("score", 1.0) >= req.min_score]
             frames.append({"index": fr["index"], "width": w, "height": h, "detections": dets})
         return EngineResult(frames=frames, runtime={"test": True})
+
+
+class ScriptedShotEngine(DetectionEngine):
+    """A test-only shot engine: `boundaries(n)` returns the boundaries for n frames, as a real engine's data."""
+    id = "scripted-shots"
+    kind = "shot"
+    runtime = "test"
+    license = "MIT"
+
+    def __init__(self, boundaries: Optional[Callable[[int], List[Dict[str, Any]]]] = None, frames_seen: Optional[int] = None) -> None:
+        self.boundaries = boundaries or (lambda n: [])
+        self.frames_seen = frames_seen
+        self.requests: List[EngineRequest] = []
+
+    def prepare(self, *, models_dir=None, model=None, tessdata_dir=None, params=None) -> Prepared:
+        return Prepared(model="test/scripted-shots", model_sha256="", files=[], license="none", version="1.0")
+
+    def detect(self, req: EngineRequest) -> EngineResult:
+        self.requests.append(req)
+        n = len(req.frames) if self.frames_seen is None else self.frames_seen
+        w, h = png_size(req.frames[0]["path"])
+        return EngineResult(frames=[], runtime={"frame_width": w, "frame_height": h},
+                            data={"boundaries": self.boundaries(n), "frames": n, "merged": 0, "parameters": {"test": True}})
