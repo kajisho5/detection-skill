@@ -46,9 +46,19 @@ VALIDATORS = {DETECTIONS_SCHEMA: validate_detections, TRACKS_SCHEMA: validate_tr
 KIND_OF = {"faces": "face", "text": "text", "objects": "object"}
 
 
+def _json_text(doc: Dict[str, Any]) -> str:
+    """UTF-8 JSON, or ASCII-escaped JSON when stdout cannot encode it (a Windows cp1252 console): valid JSON either way."""
+    text = json.dumps(doc, ensure_ascii=False, indent=2)
+    try:
+        text.encode(getattr(sys.stdout, "encoding", None) or "utf-8")
+    except (UnicodeEncodeError, LookupError):
+        text = json.dumps(doc, ensure_ascii=True, indent=2)
+    return text
+
+
 def _emit(doc: Dict[str, Any], as_json: bool, human: str = "") -> None:
     if as_json:
-        print(json.dumps(doc, ensure_ascii=False, indent=2))
+        print(_json_text(doc))
     elif human:
         print(human)
 
@@ -56,7 +66,7 @@ def _emit(doc: Dict[str, Any], as_json: bool, human: str = "") -> None:
 def _fail(code: str, message: str, as_json: bool, detail: Optional[Any] = None) -> int:
     doc = {"ok": False, "error": {"code": code, "message": message, "detail": detail}}
     if as_json:
-        print(json.dumps(doc, ensure_ascii=False, indent=2))
+        print(_json_text(doc))
     else:
         print(f"error: {message}" + (f" ({detail})" if detail else ""), file=sys.stderr)
     return ERRORS.get(code, {}).get("exit_code", 1)

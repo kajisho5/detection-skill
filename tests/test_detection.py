@@ -1216,6 +1216,17 @@ class ContractTests(unittest.TestCase):
         rc, doc = run_cli("contract", "--json")
         self.assertEqual((rc, doc["skill_id"]), (0, "detection"))
 
+    def test_json_survives_a_console_that_cannot_encode_it(self):
+        # A Windows console is cp1252: the contract lists the ja-JP pii rules, so plain UTF-8 printing would fail there.
+        raw = io.BytesIO()
+        out = io.TextIOWrapper(raw, encoding="cp1252")
+        with redirect_stdout(out):
+            rc = cli.main(["contract", "--json"])
+        out.flush()
+        doc = json.loads(raw.getvalue().decode("cp1252"))
+        self.assertEqual(rc, 0)
+        self.assertIn("患者", json.dumps(doc["pii"]["locales"]["ja-JP"], ensure_ascii=False))
+
     def test_no_shell_no_download_no_video_decoding_in_the_skill(self):
         for f in (ROOT / "src" / "detection_skill").rglob("*.py"):
             text = f.read_text(encoding="utf-8")
