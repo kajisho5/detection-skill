@@ -23,6 +23,7 @@ import copy
 import importlib.util
 import io
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -54,6 +55,8 @@ from detection_skill.service import detect, run_engine, run_process_group  # noq
 from detection_skill.tracks import TRACKS_SCHEMA, make_tracks, redact_rect, validate_tracks  # noqa: E402
 from detection_skill.shots import SHOTS_SCHEMA, detect_shots, validate_shots  # noqa: E402
 from detection_skill.reframe import REFRAME_SCHEMA, make_reframe, parse_aspect, validate_reframe, window_size  # noqa: E402
+from detection_skill.speakers import SPEAKERS_SCHEMA, make_speakers, switch_list, validate_speakers  # noqa: E402
+from detection_skill.engines.faceattrs import pose  # noqa: E402
 from detection_skill.engines.shotcore import (blend_runs, merge_boundaries, transnet_boundaries,  # noqa: E402
                                               transnet_windows)
 from detection_skill.frames import seek_time  # noqa: E402
@@ -174,7 +177,9 @@ class DetectionsTests(TmpCase):
         tracks = json.loads((ROOT / "schemas" / "tracks.schema.json").read_text(encoding="utf-8"))
         self.assertEqual(tracks["properties"]["schema"]["const"], TRACKS_SCHEMA)
         from detection_skill import reframe as rf_mod, shots as shots_mod
-        for name, const, required in (("shots", SHOTS_SCHEMA, shots_mod.REQUIRED), ("reframe", REFRAME_SCHEMA, rf_mod.REQUIRED)):
+        from detection_skill import speakers as sp_mod
+        for name, const, required in (("shots", SHOTS_SCHEMA, shots_mod.REQUIRED), ("reframe", REFRAME_SCHEMA, rf_mod.REQUIRED),
+                                      ("speakers", SPEAKERS_SCHEMA, sp_mod.REQUIRED)):
             sch = json.loads((ROOT / "schemas" / f"{name}.schema.json").read_text(encoding="utf-8"))
             self.assertEqual(sch["properties"]["schema"]["const"], const)
             self.assertEqual(set(sch["required"]), set(required))
@@ -777,6 +782,187 @@ class ReframeTests(TmpCase):
         self.assertEqual((rc, out["error"]["code"]), (2, "INVALID_ARGUMENT"))
 
 
+# ---- face attributes and active speaker ----------------------------------------------------------
+TURNS_A = [(0.0, 3.0), (6.0, 9.0)]
+TURNS_B = [(3.0, 6.0), (9.0, 12.0)]
+
+
+def talker(x, spans, size, step=0.2, shift=0.0, sharpness=400.0, frontal=1.0, y=60.0):
+    """One face box whose mouth_contrast alternates high/low from sample to sample while it speaks (spans, in its
+    camera's time; `shift` moves the spans), and stays still otherwise."""
+    def face(t, w, h):
+        on = any(a + shift <= t < b + shift for a, b in spans) and int(round(t / step)) % 2 == 0
+        return {"box": [x, y, 80.0, 100.0], "score": 0.9,
+                "attributes": {"size": size, "yaw_deg": 0.0, "roll_deg": 0.0, "frontal": frontal, "sharpness": sharpness,
+                               "mouth_contrast": 0.45 if on else 0.2}}
+    return face
+
+
+def camera(*faces):
+    return lambda t, w, h: [f(t, w, h) for f in faces]
+
+
+def turns_doc(spans_by_speaker):
+    turns = sorted(({"start": a, "end": b, "speaker": s} for s, spans in spans_by_speaker.items() for a, b in spans),
+                   key=lambda u: u["start"])
+    return {"schema": "diarization-skill/turns@1", "tool": "diarization/diarize", "turns": turns}
+
+
+class SpeakersTests(TmpCase):
+    def cams(self, shift1=0.0):
+        """camera 0: a wide shot of A (left) and B (right); camera 1: a close-up of B. Alternating turns, 12 s."""
+        out = []
+        for i, fn in enumerate((camera(talker(60.0, TURNS_A, 0.28), talker(420.0, TURNS_B, 0.28)),
+                                camera(talker(260.0, TURNS_B, 0.55, shift=shift1)))):
+            video = fake_video(self.tmp, name=f"cam{i}.mp4", duration=12.0, camera=i)
+            det = detect("face", video, every=0.2, engine=ScriptedEngine("face", fn), ffmpeg_skill=FAKE_FFMPEG_SKILL,
+                         attributes=True)
+            out.append(make_tracks(det))
+        return out
+
+    def test_pose_from_landmarks(self):
+        front = [[40, 50], [80, 50], [60, 70], [45, 90], [75, 90]]
+        p = pose(front)
+        self.assertEqual((p["yaw_deg"], p["roll_deg"], p["frontal"]), (0.0, 0.0, 1.0))
+        turned = [[40, 50], [80, 50], [70, 70], [45, 90], [75, 90]]  # nose half-way to the left eye
+        p = pose(turned)
+        self.assertAlmostEqual(p["yaw_deg"], 30.0, places=1)
+        self.assertAlmostEqual(p["frontal"], math.cos(math.radians(30)), places=3)
+        tilted = [[40, 50], [80, 90], [60, 70], [45, 90], [75, 90]]
+        self.assertAlmostEqual(pose(tilted)["roll_deg"], 45.0, places=1)
+        self.assertEqual(pose(None)["frontal"], None)
+        self.assertEqual(pose([[1, 1], [1, 1], [1, 1]])["yaw_deg"], None)
+
+    def test_attributes_only_when_asked_and_kept_by_tracks(self):
+        video = fake_video(self.tmp, duration=2.0)
+        eng = ScriptedEngine("face", camera(talker(60.0, [(0, 2)], 0.3)))
+        doc = detect("face", video, every=0.5, engine=eng, ffmpeg_skill=FAKE_FFMPEG_SKILL, attributes=True)
+        self.assertTrue(validate_detections(doc).ok, validate_detections(doc).errors)
+        self.assertEqual(doc["parameters"]["attributes"], True)
+        self.assertTrue(eng.requests[0].params["attributes"])
+        d = doc["frames"][0]["detections"][0]
+        self.assertEqual(d["attributes"]["mouth_contrast"], 0.45)
+        tr = make_tracks(doc)
+        self.assertTrue(validate_tracks(tr).ok)
+        self.assertEqual(tr["tracks"][0]["boxes"][0]["attributes"]["size"], 0.3)
+        plain = detect("face", video, every=0.5, engine=ScriptedEngine("face", camera(talker(60.0, [(0, 2)], 0.3))),
+                       ffmpeg_skill=FAKE_FFMPEG_SKILL)
+        self.assertNotIn("attributes", plain["frames"][0]["detections"][0])
+        self.assertEqual(plain["parameters"]["attributes"], False)
+        with self.assertRaises(DetectionError) as cm:
+            detect("text", video, every=0.5, engine=ScriptedEngine("text"), ffmpeg_skill=FAKE_FFMPEG_SKILL, attributes=True)
+        self.assertEqual(cm.exception.code, "INVALID_ARGUMENT")
+        for key, value in (("frontal", 1.5), ("mouth_contrast", -0.1), ("sharpness", "high"), ("smile", 0.5)):
+            bad = copy.deepcopy(doc)
+            bad["frames"][0]["detections"][0]["attributes"][key] = value
+            self.assertFalse(validate_detections(bad).ok, key)
+            badt = copy.deepcopy(tr)
+            badt["tracks"][0]["boxes"][0]["attributes"][key] = value
+            self.assertFalse(validate_tracks(badt).ok, key)
+
+    def test_mouth_motion_switches_to_the_best_view_of_the_speaker(self):
+        doc = make_speakers(self.cams())
+        rep = validate_speakers(doc)
+        self.assertTrue(rep.ok, rep.errors)
+        self.assertEqual(doc["schema"], SPEAKERS_SCHEMA)
+        self.assertEqual(doc["method"]["name"], "mouth-motion")
+        self.assertEqual([r["camera"] for r in doc["ranges"]], [0, 1, 0, 1])  # B's close-up beats the wide shot
+        for got, want in zip([r["start"] for r in doc["ranges"][1:]], [3.0, 6.0, 9.0]):
+            self.assertLessEqual(abs(got - want), 0.5, doc["switch"])
+        self.assertEqual(doc["switch"], switch_list(doc["ranges"]))
+        self.assertEqual(doc["counts"]["switches"], 3)
+        self.assertTrue(all(r["track"] for r in doc["ranges"]))
+        self.assertIsNone(doc["turns"])
+        self.assertFalse(doc["method"]["identity"])
+
+    def test_turns_give_the_switch_list_on_the_turns(self):
+        turns = turns_doc({"SPEAKER_00": TURNS_A, "SPEAKER_01": TURNS_B})
+        cams = self.cams()
+        doc = make_speakers(cams, turns=turns)
+        self.assertTrue(validate_speakers(doc).ok, validate_speakers(doc).errors)
+        self.assertEqual(doc["switch"], "0.000-3.000:0,3.000-6.000:1,6.000-9.000:0,9.000-12.000:1")
+        self.assertEqual([r["speaker"] for r in doc["ranges"]], ["SPEAKER_00", "SPEAKER_01"] * 2)
+        a_track = next(t["id"] for t in cams[0]["tracks"] if t["boxes"][0]["box"][0] < 100)
+        m = {(x["speaker"], x["camera"]): x["track"] for x in doc["matches"]}
+        self.assertEqual(m[("SPEAKER_00", 0)], a_track)
+        self.assertNotEqual(m[("SPEAKER_01", 0)], a_track)
+        self.assertEqual(m[("SPEAKER_01", 1)], cams[1]["tracks"][0]["id"])
+        self.assertNotIn(("SPEAKER_00", 1), m)  # A is not in camera 1
+        self.assertEqual(doc["turns"]["speakers"], ["SPEAKER_00", "SPEAKER_01"])
+        # a 0.4 s interjection is folded into the shot around it unless --min-shot allows it
+        inter = turns_doc({"SPEAKER_00": [(0.0, 3.0), (6.0, 7.0), (7.4, 9.0)], "SPEAKER_01": [(3.0, 6.0), (7.0, 7.4), (9.0, 12.0)]})
+        self.assertEqual(make_speakers(cams, turns=inter)["switch"], "0.000-3.000:0,3.000-6.000:1,6.000-9.000:0,9.000-12.000:1")
+        self.assertIn("7.000-7.400:1", make_speakers(cams, turns=inter, min_shot=0.2)["switch"])
+        # a turns file on another clock is moved onto camera 0's with --turns-offset
+        late = turns_doc({"SPEAKER_00": [(a + 1.0, b + 1.0) for a, b in TURNS_A], "SPEAKER_01": [(a + 1.0, b + 1.0) for a, b in TURNS_B]})
+        self.assertEqual(make_speakers(cams, turns=late, turns_offset=-1.0)["switch"], doc["switch"])
+
+    def test_offsets_put_cameras_on_the_reference_timeline(self):
+        turns = turns_doc({"SPEAKER_00": TURNS_A, "SPEAKER_01": TURNS_B})
+        cams = self.cams(shift1=-1.0)  # camera 1 started 1 s late: its clock reads 1 s less
+        doc = make_speakers(cams, offsets=[0.0, 1.0], turns=turns)
+        self.assertEqual(doc["switch"], "0.000-3.000:0,3.000-6.000:1,6.000-9.000:0,9.000-12.000:1")
+        self.assertEqual(doc["cameras"][1]["offset"], 1.0)
+        mouth = make_speakers(cams, offsets=[0.0, 1.0])
+        for got, want in zip([r["start"] for r in mouth["ranges"][1:]], [3.0, 6.0, 9.0]):
+            self.assertLessEqual(abs(got - want), 0.5, mouth["switch"])
+
+    def test_refusals_and_validator(self):
+        cams = self.cams()
+        for kw, code in ((dict(cameras=cams[:1]), "INVALID_ARGUMENT"), (dict(cameras=[cams[0], cams[0]]), "INVALID_ARGUMENT"),
+                         (dict(cameras=cams, offsets=[0.0]), "INVALID_ARGUMENT"), (dict(cameras=cams, window=0), "INVALID_ARGUMENT"),
+                         (dict(cameras=cams, turns={"schema": "x"}), "INVALID_DETECTIONS"),
+                         (dict(cameras=cams, turns=turns_doc({"Alice": [(0, 1)]})), "INVALID_DETECTIONS")):
+            with self.assertRaises(DetectionError) as cm:
+                make_speakers(**kw)
+            self.assertEqual(cm.exception.code, code, kw.keys())
+        video = fake_video(self.tmp, name="plain.mp4", duration=12.0)
+        plain = make_tracks(detect("face", video, every=0.2, engine=ScriptedEngine("face", camera(talker(60.0, TURNS_A, 0.3))),
+                                   ffmpeg_skill=FAKE_FFMPEG_SKILL))
+        with self.assertRaises(DetectionError) as cm:
+            make_speakers([plain, cams[1]])
+        self.assertIn("--attributes", cm.exception.message)
+        base = make_speakers(cams, turns=turns_doc({"SPEAKER_00": TURNS_A, "SPEAKER_01": TURNS_B}))
+        cases = {
+            "gap": lambda d: d["ranges"][1].__setitem__("start", 3.5),
+            "switch": lambda d: d.__setitem__("switch", "0.000-12.000:0"),
+            "camera": lambda d: d["ranges"][0].__setitem__("camera", 5),
+            "identity": lambda d: d["method"].__setitem__("identity", True),
+            "speaker": lambda d: d["ranges"][0].__setitem__("speaker", "Alice"),
+            "counts": lambda d: d["counts"].__setitem__("switches", 9),
+            "end": lambda d: d["ranges"][-1].__setitem__("end", 11.0),
+            "turns": lambda d: d.__setitem__("turns", None),
+            "reason": lambda d: d["ranges"][0].__setitem__("reason", ""),
+        }
+        for name, mutate in cases.items():
+            d = copy.deepcopy(base)
+            mutate(d)
+            self.assertFalse(validate_speakers(d).ok, name)
+
+    def test_cli_speakers_and_check(self):
+        cams = self.cams()
+        paths = []
+        for i, doc in enumerate(cams):
+            paths.append(os.path.join(self.tmp, f"cam{i}_tracks.json"))
+            Path(paths[-1]).write_text(json.dumps(doc), encoding="utf-8")
+        tp = os.path.join(self.tmp, "turns.json")
+        Path(tp).write_text(json.dumps(turns_doc({"SPEAKER_00": TURNS_A, "SPEAKER_01": TURNS_B})), encoding="utf-8")
+        out_p = os.path.join(self.tmp, "speakers.json")
+        rc, out = run_cli("speakers", "--camera", paths[0], "--camera", paths[1], "--turns", tp, "--offsets", "0,0", "-o", out_p, "--json")
+        self.assertEqual((rc, out["switch"]), (0, "0.000-3.000:0,3.000-6.000:1,6.000-9.000:0,9.000-12.000:1"), out)
+        self.assertEqual([c["file"] for c in out["cameras"]], ["cam0_tracks.json", "cam1_tracks.json"])
+        self.assertEqual(out["turns"]["file"], "turns.json")
+        rc, out = run_cli("check", out_p, "--json")
+        self.assertEqual((rc, out["schema"], out["ok"]), (0, SPEAKERS_SCHEMA, True))
+        rc, out = run_cli("speakers", "--camera", paths[0], "--camera", paths[1], "-o", out_p, "--json")
+        self.assertEqual((rc, out["error"]["code"]), (2, "OUTPUT_EXISTS"))
+        rc, out = run_cli("speakers", "--camera", paths[0], "--camera", paths[1], "--offsets", "0,x",
+                          "-o", os.path.join(self.tmp, "s2.json"), "--json")
+        self.assertEqual((rc, out["error"]["code"]), (2, "INVALID_ARGUMENT"))
+        rc, out = run_cli("speakers", "--camera", paths[0], "--camera", paths[1], "-o", paths[1], "--overwrite", "--json")
+        self.assertEqual((rc, out["error"]["code"]), (2, "OUTPUT_IS_INPUT"))
+
+
 # ---- small pieces ---------------------------------------------------------------------------------
 class PieceTests(unittest.TestCase):
     def test_boxes(self):
@@ -870,7 +1056,7 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(c["version"], __version__)
         self.assertEqual({p["id"] for p in c["provides"]},
                          {"vision.detect_faces", "vision.detect_text", "vision.detect_objects", "vision.track_boxes",
-                          "vision.detect_shots", "vision.reframe_path"})
+                          "vision.detect_shots", "vision.reframe_path", "vision.active_speaker"})
         tool_ids = {t["tool_id"] for t in TOOLS}
         for p in c["provides"]:
             self.assertEqual(set(p), {"id", "lifecycle", "tool_id"})
@@ -1181,6 +1367,67 @@ class RealReframeTests(TmpCase):
             self.assertEqual(ws[0]["shot"], 0)
             self.assertEqual(ws[-1]["shot"], 1)
 
+
+
+# Two cameras, 640x360 at 25 fps, 12 s. Camera 0: a wide shot of two faces (A on the left; B, the same portrait
+# mirrored, on the right); camera 1: a close-up of B. A speaks 0-3 s and 6-9 s, B 3-6 s and 9-12 s: while a face
+# speaks, a dark mouth opening is drawn over its mouth on every other block of three frames (lavfi drawbox), in every
+# camera that shows it. Ground truth from the construction: switches at 3, 6 and 9 s, B on its close-up.
+MOUTH_IN_CROP = (61, 108, 24, 10)  # x, y, w, h of the mouth in the astronaut face crop img[30:210, 150:300]
+
+
+def render_talk_camera(path, faces, crops):
+    def on(spans):
+        return "+".join(f"between(t,{a},{b - 0.001})" for a, b in spans)
+    argv = ["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "color=c=gray:s=640x360:r=25:d=12"]
+    graph, last = [], "[0:v]"
+    for i, (name, s, x, y, spans) in enumerate(faces):
+        argv += ["-loop", "1", "-i", crops[name]]
+        mx = 150 - MOUTH_IN_CROP[0] - MOUTH_IN_CROP[2] if name == "B" else MOUTH_IN_CROP[0]
+        bx, by = int(x + mx * s), int(y + MOUTH_IN_CROP[1] * s)
+        bw, bh = int(MOUTH_IN_CROP[2] * s), int(MOUTH_IN_CROP[3] * s)
+        graph.append(f"[{i + 1}:v]scale=iw*{s}:ih*{s}[f{i}];{last}[f{i}]overlay={x}:{y}:shortest=1[o{i}];"
+                     f"[o{i}]drawbox=x={bx}:y={by}:w={bw}:h={bh}:color=black:t=fill:"
+                     f"enable='({on(spans)})*lt(mod(n\\,6)\\,3)'[d{i}]")
+        last = f"[d{i}]"
+    graph.append(f"{last}format=yuv420p[out]")
+    subprocess.run(argv + ["-filter_complex", ";".join(graph), "-map", "[out]", "-r", "25", path], check=True)
+
+
+@unittest.skipUnless(HAVE_CV2 and YUNET_FILE and REAL_VIDEO,
+                     "needs YuNet in DETECTION_MODELS_DIR, opencv, ffmpeg and an ffmpeg-skill checkout")
+class RealSpeakersTests(TmpCase):
+    def test_two_cameras_alternating_speakers(self):
+        import cv2
+        img = cv2.imread(str(FIXTURES / "astronaut.jpg"))
+        crop = img[30:210, 150:300]
+        crops = {"A": os.path.join(self.tmp, "a.png"), "B": os.path.join(self.tmp, "b.png")}
+        cv2.imwrite(crops["A"], crop)
+        cv2.imwrite(crops["B"], cv2.flip(crop, 1))
+        videos = [os.path.join(self.tmp, "cam0.mp4"), os.path.join(self.tmp, "cam1.mp4")]
+        render_talk_camera(videos[0], [("A", 1.2, 60, 70, TURNS_A), ("B", 1.2, 400, 70, TURNS_B)], crops)
+        render_talk_camera(videos[1], [("B", 1.5, 200, 45, TURNS_B)], crops)
+        cams = []
+        for v in videos:
+            det = detect("face", v, every=0.12, models_dir=MODELS_DIR, model=YUNET_FILE, ffmpeg_skill=str(FFMPEG_SKILL_DIR),
+                         attributes=True)
+            self.assertTrue(validate_detections(det).ok, validate_detections(det).errors)
+            a = det["frames"][0]["detections"][0]["attributes"]
+            self.assertGreater(a["frontal"], 0.9)
+            self.assertGreater(a["sharpness"], 0)
+            cams.append(make_tracks(det))
+        self.assertEqual([c["counts"]["tracks"] for c in cams], [2, 1])
+        truth = [3.0, 6.0, 9.0]
+        turns = turns_doc({"SPEAKER_00": TURNS_A, "SPEAKER_01": TURNS_B})
+        for label, doc in (("mouth motion", make_speakers(cams)), ("turns", make_speakers(cams, turns=turns))):
+            rep = validate_speakers(doc)
+            self.assertTrue(rep.ok, rep.errors)
+            starts = [r["start"] for r in doc["ranges"][1:]]
+            err = max(abs(a - b) for a, b in zip(starts, truth)) if len(starts) == len(truth) else None
+            print(f"\n  speakers ({label}): switch {doc['switch']}; worst switch error "
+                  f"{'n/a' if err is None else f'{err:.2f}s'} (limit 0.5 s)", end="")
+            self.assertEqual([r["camera"] for r in doc["ranges"]], [0, 1, 0, 1], doc["switch"])
+            self.assertLessEqual(err, 0.5)
 
 if __name__ == "__main__":
     unittest.main()

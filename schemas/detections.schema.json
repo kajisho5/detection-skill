@@ -114,9 +114,22 @@
         "words": {"type": "integer", "description": "text only: words in the line"},
         "landmarks": {"type": "array", "items": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "number"}},
                       "description": "face only: five points (eyes, nose, mouth corners) in source pixels"},
+        "attributes": {"$ref": "#/$defs/face_attributes"},
         "engine": {"type": "string"},
         "model": {"type": "string"},
         "model_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "face_attributes": {
+      "type": "object", "additionalProperties": false,
+      "description": "face only, with detection faces --attributes (ADR-005): measured heuristics, each null when it could not be measured",
+      "properties": {
+        "size": {"type": ["number", "null"], "minimum": 0, "maximum": 1, "description": "box height / frame height"},
+        "yaw_deg": {"type": ["number", "null"], "minimum": -90, "maximum": 90, "description": "from the landmarks: nose offset from the eyes' midpoint"},
+        "roll_deg": {"type": ["number", "null"], "minimum": -180, "maximum": 180, "description": "angle of the eye line"},
+        "frontal": {"type": ["number", "null"], "minimum": 0, "maximum": 1, "description": "cos(yaw): 1 looking at the camera, 0 in profile"},
+        "sharpness": {"type": ["number", "null"], "minimum": 0, "description": "variance of the Laplacian of the face resized to 96x96 gray"},
+        "mouth_contrast": {"type": ["number", "null"], "minimum": 0, "maximum": 1, "description": "gray-level standard deviation around the mouth corners / 128; its change over time is mouth motion"}
       }
     }
   }

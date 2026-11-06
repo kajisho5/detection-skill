@@ -3,7 +3,8 @@
 YuNet finds faces of roughly 10 px to 300 px. A frame larger than SECOND_SCALE_ABOVE px on its long side is
 also run downscaled to SECOND_SCALE_SIDE px, so a large face in a 1080p/4K frame is found too; the two passes
 are merged by non-maximum suppression. A box is a measured face region with a score and five landmarks. It is
-never an identity: no embedding, no recognition, no name.
+never an identity: no embedding, no recognition, no name. With `params["attributes"]` each face also gets its
+measured attributes (size, pose, sharpness, mouth contrast: `faceattrs.py`, ADR-005), on the full-size frame.
 """
 from __future__ import annotations
 
@@ -15,6 +16,7 @@ from ..errors import DetectionError
 from ..models import KNOWN_MODELS, MODEL_LICENSES, describe_file, find_model
 from .base import DetectionEngine, EngineRequest, EngineResult, Prepared
 from .boxes import nms
+from .faceattrs import measure
 
 SECOND_SCALE_ABOVE = 960
 SECOND_SCALE_SIDE = 640
@@ -58,6 +60,7 @@ class YunetEngine(DetectionEngine):
         if not hasattr(cv2, "FaceDetectorYN"):
             raise DetectionError("ENGINE_UNAVAILABLE", "this OpenCV has no FaceDetectorYN (needs >= 4.5.4)", INSTALL)
         score = max(0.0, float(req.min_score or 0.0))
+        attributes = bool((req.params or {}).get("attributes"))
         det = cv2.FaceDetectorYN.create(req.model_path, "", (320, 320), score, NMS_IOU, 5000)
         frames: List[Dict[str, Any]] = []
         for fr in req.frames:
@@ -69,7 +72,12 @@ class YunetEngine(DetectionEngine):
                 s = SECOND_SCALE_SIDE / float(side)
                 small = cv2.resize(img, (max(1, int(round(w * s))), max(1, int(round(h * s)))), interpolation=cv2.INTER_AREA)
                 found += _detect(det, small, 1.0 / s)
-            frames.append({"index": fr["index"], "width": w, "height": h, "detections": nms(found, NMS_IOU)})
+            kept = nms(found, NMS_IOU)
+            if attributes and kept:
+                gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+                for d in kept:
+                    d["attributes"] = measure(gray, d["box"], d.get("landmarks"))
+            frames.append({"index": fr["index"], "width": w, "height": h, "detections": kept})
         return EngineResult(frames=frames, runtime={"opencv": _cv2_version()})
 
 

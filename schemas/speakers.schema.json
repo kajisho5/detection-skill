@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/kajisho5/detection-skill/schemas/speakers.schema.json",
+  "title": "Speakers",
+  "description": "detection-skill/speakers@1. Active speaker for multicam switching: per time range on camera 0's (the reference's) timeline, which face track is speaking (mouth motion from faces --attributes, or diarization-skill turns matched to faces) and which camera shows it best (size, frontal angle, sharpness); `switch` is the ranges in ffmpeg-skill multicam --switch form. A documented heuristic; neither a track id nor a speaker id is an identity. The validator in src/detection_skill/speakers.py is the executable form and also checks that the ranges are contiguous and that `switch` equals them.",
+  "type": "object",
+  "required": ["schema", "source", "cameras", "turns", "method", "parameters", "matches", "ranges", "switch", "counts", "skill",
+               "skill_version", "tool", "created_at", "processing_seconds", "warnings"],
+  "properties": {
+    "schema": {"const": "detection-skill/speakers@1"},
+    "source": {"type": "object", "description": "camera 0's source, copied from its face tracks"},
+    "cameras": {
+      "type": "array", "minItems": 2,
+      "items": {"type": "object", "required": ["index", "file", "fingerprint", "source", "offset", "tracks", "sampling_step", "attributes"],
+                "properties": {"index": {"type": "integer", "minimum": 0}, "offset": {"type": "number", "description": "reference time = camera time + offset"},
+                               "attributes": {"type": "boolean", "description": "its boxes carry mouth_contrast (faces --attributes)"}}}
+    },
+    "turns": {"type": ["object", "null"], "description": "the diarization-skill turns document used (file, fingerprint, offset, speakers, turns), or null"},
+    "method": {"type": "object", "required": ["name", "heuristic", "identity", "note"],
+               "properties": {"name": {"enum": ["mouth-motion", "turns+mouth-motion"]}, "heuristic": {"const": true}, "identity": {"const": false}}},
+    "parameters": {"type": "object", "required": ["window", "min_activity", "min_shot", "step", "share"]},
+    "matches": {
+      "type": "array",
+      "description": "with turns: each anonymous speaker's face track per camera, with the mouth activity during and outside its turns",
+      "items": {"type": "object", "required": ["speaker", "camera", "track", "score", "activity_in_turns", "activity_elsewhere"],
+                "properties": {"speaker": {"type": "string", "pattern": "^SPEAKER_\\d{2,}$"}, "camera": {"type": "integer", "minimum": 0},
+                               "track": {"type": "string", "pattern": "^track_\\d{3,}$"}}}
+    },
+    "ranges": {
+      "type": "array", "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["start", "end", "camera", "track", "speaker", "reason", "quality"],
+        "properties": {
+          "start": {"type": "number", "minimum": 0}, "end": {"type": "number"},
+          "camera": {"type": "integer", "minimum": 0},
+          "track": {"type": ["string", "null"], "pattern": "^track_\\d{3,}$", "description": "the speaking face track in that camera, null when the camera holds or nobody spoke yet"},
+          "speaker": {"type": ["string", "null"], "pattern": "^SPEAKER_\\d{2,}$", "description": "the diarization speaker (turns only)"},
+          "reason": {"type": "string", "minLength": 1},
+          "quality": {"type": ["number", "null"], "description": "mean view quality of the track in the range (0.5 size + 0.3 frontal + 0.2 sharpness)"}
+        }
+      }
+    },
+    "switch": {"type": "string", "pattern": "^(\\d+\\.\\d{3}-\\d+\\.\\d{3}:\\d+)(,\\d+\\.\\d{3}-\\d+\\.\\d{3}:\\d+)*$",
+               "description": "ffmpeg-skill multicam --switch: START-END:CAM on the reference timeline"},
+    "counts": {"type": "object", "required": ["cameras", "ranges", "switches", "matches"]},
+    "skill": {"const": "detection-skill"},
+    "skill_version": {"type": "string"},
+    "tool": {"const": "detection/speakers"},
+    "created_at": {"type": "string"},
+    "processing_seconds": {"type": "number", "minimum": 0},
+    "warnings": {"type": "array", "items": {"type": "string"}}
+  }
+}
