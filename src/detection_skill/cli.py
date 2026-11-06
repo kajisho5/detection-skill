@@ -10,6 +10,7 @@
   detection reframe tracks.json --aspect 9:16 --shots shots.json -o reframe.json   # a crop window per sample time
   detection faces camB.mp4 --every 0.12 --attributes -o b.json                # + size, pose, sharpness, mouth contrast
   detection pii text.json [--faces faces.json] [--locale intl,ja-JP] -o pii.json   # personal / patient data to confirm
+  detection rank faces.json -o rank.json --top 5                              # frames for a thumbnail: eyes open, sharp, frontal
   detection speakers --camera a_tracks.json --camera b_tracks.json [--turns turns.json] -o speakers.json  # multicam switch list
   detection check faces.json --json
   detection contract --json
@@ -33,6 +34,7 @@ from .doctor import doctor
 from .engines import DEFAULT_SHOT_ENGINE, SHOT_ENGINES
 from .errors import DetectionError
 from .pii import PII_SCHEMA, make_pii, validate_pii
+from .rank import RANK_SCHEMA, make_rank, validate_rank
 from .reframe import REFRAME_SCHEMA, make_reframe, validate_reframe
 from .service import DEFAULT_MAX_FRAMES, DEFAULT_MIN_SCORE, DEFAULT_TIMEOUT, LEVELS, detect
 from .shots import DEFAULT_MAX_FRAMES_SHOTS, SHOT_WIDTH, SHOTS_SCHEMA, detect_shots, validate_shots
@@ -41,7 +43,7 @@ from .tracks import TRACKS_SCHEMA, fingerprint_bytes, make_tracks, validate_trac
 
 VALIDATORS = {DETECTIONS_SCHEMA: validate_detections, TRACKS_SCHEMA: validate_tracks, SHOTS_SCHEMA: validate_shots,
               REFRAME_SCHEMA: validate_reframe, SPEAKERS_SCHEMA: validate_speakers,
-              PII_SCHEMA: validate_pii}
+              PII_SCHEMA: validate_pii, RANK_SCHEMA: validate_rank}
 
 KIND_OF = {"faces": "face", "text": "text", "objects": "object"}
 
@@ -280,6 +282,26 @@ def cmd_pii(a: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_rank(a: argparse.Namespace) -> int:
+    _check_output(a.output, [a.faces], a.overwrite)
+    faces, fp = _read_doc(a.faces)
+    out = make_rank(faces, all_faces=a.all_faces, top=a.top, file=a.faces, fingerprint=fp)
+    rep = validate_rank(out)
+    if not rep.ok:
+        raise DetectionError("INVALID_RESULT", "rank failed validation; nothing written", rep.errors[:10])
+    _write_json(a.output, out)
+    lines = [f"{out['counts']['ranked']} frame(s) ranked, {out['counts']['without_face']} without a face; wrote {a.output}"]
+    for f in out["frames"]:
+        if f["rank"] is None:
+            continue
+        b = f["faces"][f["best_face"]]["parts"]
+        t = "image" if f["t"] is None else f"{f['t']:9.3f}s"
+        lines.append(f"  #{f['rank']:<3} {t}  score {f['score']:.3f}  eyes {b['eyes_open']}  sharp {b['sharpness']}  "
+                     f"frontal {b['frontal']}  size {b['size']}")
+    _emit(dict(out, ok=True, rank_file=os.path.abspath(a.output)), a.json, "\n".join(lines))
+    return 0
+
+
 def cmd_check(a: argparse.Namespace) -> int:
     doc = load_json(a.file)
     schema = doc.get("schema") if isinstance(doc, dict) else None
@@ -359,7 +381,8 @@ def parser() -> argparse.ArgumentParser:
     f.add_argument("--models-dir", help="directory with face_detection_yunet_2026may.onnx (default: $DETECTION_MODELS_DIR)")
     f.add_argument("--model", help="model file name inside the models directory")
     f.add_argument("--attributes", action="store_true", help="also measure each face's size, pose (yaw, roll, frontal), "
-                                                             "sharpness and mouth contrast (heuristics, ADR-005)")
+                                                             "sharpness, mouth contrast and eyes open (heuristics, ADR-005, "
+                                                             "ADR-007)")
 
     t = _add_detect(sub, "text", "text lines and their OCR text (Tesseract, ja/en)")
     t.add_argument("--lang", default=None, help="Tesseract languages, e.g. jpn+eng (default), eng, jpn")
@@ -452,7 +475,17 @@ def parser() -> argparse.ArgumentParser:
     pi.add_argument("--json", action="store_true")
     pi.set_defaults(func=cmd_pii)
 
-    c = sub.add_parser("check", help="validate a detections, tracks, shots, reframe, speakers or pii document")
+    rk = sub.add_parser("rank", help="rank frames for a thumbnail or take: eyes open, sharp, frontal, large faces (heuristic)")
+    rk.add_argument("faces", help="face detections with attributes (detection faces --attributes)")
+    rk.add_argument("--top", type=int, help="keep only the best N frames")
+    rk.add_argument("--all-faces", action="store_true", help="score a frame by the mean of all its faces (group shots), "
+                                                             "not its best face")
+    rk.add_argument("-o", "--output", required=True, help="write the rank JSON here")
+    rk.add_argument("--overwrite", action="store_true")
+    rk.add_argument("--json", action="store_true")
+    rk.set_defaults(func=cmd_rank)
+
+    c = sub.add_parser("check", help="validate a detections, tracks, shots, reframe, speakers, pii or rank document")
     c.add_argument("file")
     c.add_argument("--json", action="store_true")
     c.set_defaults(func=cmd_check)

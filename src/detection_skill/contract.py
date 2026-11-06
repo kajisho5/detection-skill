@@ -11,6 +11,7 @@ from .engines import DEFAULT_ENGINE, DEFAULT_SHOT_ENGINE, SHOT_ENGINES, engine_i
 from .frames import ENV_DIRS, REQUIRED_TOOLS, VERSION_RANGE
 from .models import ENV_MODELS_DIR, ENV_TESSDATA_DIR, FACE_MODEL_DEFAULT, KNOWN_MODELS, KNOWN_TESSDATA, SHOT_MODEL_DEFAULT
 from .pii import CATEGORIES as PII_CATEGORIES, DEFAULT_LOCALES as PII_DEFAULT_LOCALES, PII_SCHEMA, RULES as PII_RULES
+from .rank import RANK_SCHEMA, WEIGHTS as RANK_WEIGHTS
 from .reframe import METHOD as REFRAME_METHOD, REFRAME_SCHEMA
 from .service import DEFAULT_EVERY, DEFAULT_MAX_FRAMES, DEFAULT_MIN_SCORE, DEFAULT_TIMEOUT
 from .shots import DEFAULT_MAX_FRAMES_SHOTS, SHOT_WIDTH, SHOTS_SCHEMA
@@ -27,7 +28,7 @@ TOOLS: List[Dict[str, Any]] = [
     {"tool_id": "detection/faces", "role": "measurement", "writes_media": False, "mutates_input": False, "deterministic": True,
      "description": "Face boxes (YuNet) at sampled times of a video, or in an image: time, box in pixels and normalized, "
                     "score, five landmarks, engine, model and model sha256; with --attributes also each face's measured "
-                    "size, pose (yaw, roll, frontal), sharpness and mouth contrast (heuristics). A face box is never an identity",
+                    "size, pose (yaw, roll, frontal), sharpness, mouth contrast and eyes open (heuristics). A face box is never an identity",
      "argv": ["faces", "<video|image>"] + _SAMPLING + ["[--models-dir <dir>]", "[--model <file.onnx>]", "[--attributes]"] + _COMMON},
     {"tool_id": "detection/text", "role": "measurement", "writes_media": False, "mutates_input": False, "deterministic": True,
      "description": "Text lines (Tesseract, ja/en, vertical Japanese with jpn_vert) with their boxes and OCR text, from a "
@@ -73,10 +74,15 @@ TOOLS: List[Dict[str, Any]] = [
                     "every one a proposal to confirm (CONFIRM). It removes nothing",
      "argv": ["pii", "<text-det.json>", "-o <pii.json>", "[--faces <face-det.json>]", "[--locale intl,...]", "[--pad 0.1]",
               "[--overwrite]", "--json"]},
+    {"tool_id": "detection/rank", "role": "transformation", "writes_media": False, "mutates_input": False, "deterministic": True,
+     "description": "Rank a video's sampled frames (or images) for a thumbnail or a take by their faces' measured attributes: "
+                    "eyes open, sharpness (blur), frontal angle and size, each part and the weighted score listed. A documented "
+                    "heuristic; it suggests, a person or thumbnail-skill picks",
+     "argv": ["rank", "<face-det.json>", "-o <rank.json>", "[--top N]", "[--all-faces]", "[--overwrite]", "--json"]},
     {"tool_id": "detection/check", "role": "validation", "writes_media": False, "mutates_input": False, "deterministic": True,
      "description": f"Validate a detections ({DETECTIONS_SCHEMA}), tracks ({TRACKS_SCHEMA}), shots ({SHOTS_SCHEMA}), reframe "
-                    f"({REFRAME_SCHEMA}), speakers ({SPEAKERS_SCHEMA}) or pii ({PII_SCHEMA}) document",
-     "argv": ["check", "<det.json|tracks.json|shots.json|reframe.json|speakers.json|pii.json>", "--json"]},
+                    f"({REFRAME_SCHEMA}), speakers ({SPEAKERS_SCHEMA}), pii ({PII_SCHEMA}) or rank ({RANK_SCHEMA}) document",
+     "argv": ["check", "<det.json|tracks.json|shots.json|reframe.json|speakers.json|pii.json|rank.json>", "--json"]},
 ]
 
 ERRORS = {
@@ -112,7 +118,8 @@ def contract() -> Dict[str, Any]:
                      {"id": "vision.detect_shots", "lifecycle": "EXPERIMENTAL", "tool_id": "detection/shots"},
                      {"id": "vision.reframe_path", "lifecycle": "EXPERIMENTAL", "tool_id": "detection/reframe"},
                      {"id": "vision.active_speaker", "lifecycle": "EXPERIMENTAL", "tool_id": "detection/speakers"},
-                     {"id": "vision.find_personal_data", "lifecycle": "EXPERIMENTAL", "tool_id": "detection/pii"}],
+                     {"id": "vision.find_personal_data", "lifecycle": "EXPERIMENTAL", "tool_id": "detection/pii"},
+                     {"id": "vision.rank_face_frames", "lifecycle": "EXPERIMENTAL", "tool_id": "detection/rank"}],
         "dependencies": [
             {"id": "ffmpeg-skill", "kind": "skill", "required": True, "version_range": VERSION_RANGE,
              "for": ["detection/faces", "detection/text", "detection/objects", "detection/shots"],
@@ -173,6 +180,9 @@ def contract() -> Dict[str, Any]:
                 "identity": False, "decision": "CONFIRM", "removes": False, "categories": list(PII_CATEGORIES),
                 "default_locales": list(PII_DEFAULT_LOCALES),
                 "locales": {loc: [{"rule": r[0], "category": r[1], "means": r[3]} for r in rules] for loc, rules in PII_RULES.items()}},
+        "rank": {"schema": RANK_SCHEMA, "schema_file": "schemas/face-rank.schema.json", "method": "face-quality",
+                 "heuristic": True, "identity": False, "weights": dict(RANK_WEIGHTS),
+                 "attributes": "detection faces --attributes: eyes_open, sharpness, frontal, size"},
         "engines": {"default": dict(DEFAULT_ENGINE, shot=DEFAULT_SHOT_ENGINE), "registered": engine_ids(),
                     "known_model_sha256": {k: v["file"] for k, v in KNOWN_MODELS.items()},
                     "known_tessdata_sha256": {k: v["lang"] + " (" + v["variant"] + ")" for k, v in KNOWN_TESSDATA.items()}},

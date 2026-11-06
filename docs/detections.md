@@ -1,4 +1,4 @@
-# Detections (`detection-skill/detections@1`), tracks (`detection-skill/tracks@1`), shots (`detection-skill/shots@1`), reframe (`detection-skill/reframe@1`), speakers (`detection-skill/speakers@1`) and personal data (`detection-skill/pii@1`)
+# Detections (`detection-skill/detections@1`), tracks (`detection-skill/tracks@1`), shots (`detection-skill/shots@1`), reframe (`detection-skill/reframe@1`), speakers (`detection-skill/speakers@1`), personal data (`detection-skill/pii@1`) and face rank (`detection-skill/face-rank@1`)
 
 JSON Schemas: `schemas/detections.schema.json`, `schemas/tracks.schema.json`, `schemas/shots.schema.json`, `schemas/reframe.schema.json`. The validators in `src/detection_skill/detections.py`, `tracks.py`, `shots.py` and `reframe.py` are the executable form; `detection check <file>` runs the right one by the document's `schema`.
 
@@ -32,7 +32,7 @@ A detection:
 | `lang` | text only: the Tesseract languages used (`jpn+eng`, `jpn_vert+eng`, ...) |
 | `words` | text only: number of words in the line |
 | `landmarks` | face only: five points (right eye, left eye, nose tip, right and left mouth corner) in source pixels |
-| `attributes` | face only, with `faces --attributes` (ADR-005): `size` (box height / frame height), `yaw_deg`, `roll_deg`, `frontal` (cos yaw; from the landmarks), `sharpness` (Laplacian variance of the face at 96x96), `mouth_contrast` (gray-level spread around the mouth corners / 128); each null when it could not be measured. Heuristics |
+| `attributes` | face only, with `faces --attributes` (ADR-005): `size` (box height / frame height), `yaw_deg`, `roll_deg`, `frontal` (cos yaw; from the landmarks), `sharpness` (Laplacian variance of the face at 96x96), `mouth_contrast` (gray-level spread around the mouth corners / 128), `eyes_open` (share of edges across the eyes in the eye regions, rescaled: about 0.8 open, 0.2 closed; ADR-007); each null when it could not be measured. Heuristics |
 | `engine`, `model`, `model_sha256` | provenance on every box, equal to the document's `engine` |
 
 For OCR, `model_sha256` is the sha256 over the sorted `file=sha256` lines of the traineddata files used; each file's own sha256 is in `engine.files`, with `variant: tessdata_best` when it matches the skill's table and `unknown (...)` otherwise.
@@ -147,4 +147,21 @@ Rules the validator checks: frames in time order inside the duration; boxes insi
 | `regions` | `[{id, t, category, box, rules, excerpt, reason, source, score, decision: CONFIRM, redact {x, y, width, height}}]` |
 | `redact` | `[{category, regions, start, end, x, y, width, height, decision: CONFIRM, reason}]`: overlapping regions of one category at consecutive sample times as one span (`start`/`end` null for an image) |
 | `counts` | `regions`, `redact`, `by_category`, `confirm` |
+
+## Face rank (a heuristic)
+
+`detection rank faces.json [--top N] [--all-faces] -o rank.json` ranks the sampled frames (or images) of a `faces --attributes` run for a thumbnail or a take (ADR-007). It picks nothing on its own.
+
+- **Score.** Per face: 0.35 eyes open + 0.25 sharpness / (sharpness + 100) + 0.20 frontal + 0.20 min(1, size / 0.4), each part in 0-1. A frame scores by its best face, or with `--all-faces` by the mean of its faces.
+- A part not measured counts 0 and is named in `missing`; frames without a face come last with `score` and `rank` null.
+
+| field | meaning |
+|---|---|
+| `schema` | `detection-skill/face-rank@1` |
+| `source` | copied from the face detections |
+| `input` | `file`, `fingerprint`, `tool`, `frames`, `detections`, `sampling` |
+| `method` | `name: face-quality`, `heuristic: true`, `identity: false`, `note` |
+| `parameters` | `weights`, `sharpness_half` (100), `size_full` (0.4), `all_faces`, `top` |
+| `frames` | `[{index, t, score, rank, best_face, faces: [{face, box, score, parts {eyes_open, sharpness, frontal, size}, missing, eyes_open}]}]`, best first |
+| `counts` | `frames`, `ranked`, `without_face` |
 

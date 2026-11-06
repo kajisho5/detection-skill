@@ -55,9 +55,10 @@ from detection_skill.service import detect, run_engine, run_process_group  # noq
 from detection_skill.tracks import TRACKS_SCHEMA, make_tracks, redact_rect, validate_tracks  # noqa: E402
 from detection_skill.shots import SHOTS_SCHEMA, detect_shots, validate_shots  # noqa: E402
 from detection_skill.reframe import REFRAME_SCHEMA, make_reframe, parse_aspect, validate_reframe, window_size  # noqa: E402
+from detection_skill.rank import RANK_SCHEMA, make_rank, validate_rank  # noqa: E402
 from detection_skill.pii import PII_SCHEMA, find, make_pii, parse_locales, validate_pii  # noqa: E402
 from detection_skill.speakers import SPEAKERS_SCHEMA, make_speakers, switch_list, validate_speakers  # noqa: E402
-from detection_skill.engines.faceattrs import pose  # noqa: E402
+from detection_skill.engines.faceattrs import eye_share, pose  # noqa: E402
 from detection_skill.engines.shotcore import (blend_runs, merge_boundaries, transnet_boundaries,  # noqa: E402
                                               transnet_windows)
 from detection_skill.frames import seek_time  # noqa: E402
@@ -178,9 +179,10 @@ class DetectionsTests(TmpCase):
         tracks = json.loads((ROOT / "schemas" / "tracks.schema.json").read_text(encoding="utf-8"))
         self.assertEqual(tracks["properties"]["schema"]["const"], TRACKS_SCHEMA)
         from detection_skill import reframe as rf_mod, shots as shots_mod
-        from detection_skill import pii as pii_mod, speakers as sp_mod
+        from detection_skill import pii as pii_mod, rank as rank_mod, speakers as sp_mod
         for name, const, required in (("shots", SHOTS_SCHEMA, shots_mod.REQUIRED), ("reframe", REFRAME_SCHEMA, rf_mod.REQUIRED),
-                                      ("speakers", SPEAKERS_SCHEMA, sp_mod.REQUIRED), ("pii", PII_SCHEMA, pii_mod.REQUIRED)):
+                                      ("speakers", SPEAKERS_SCHEMA, sp_mod.REQUIRED), ("pii", PII_SCHEMA, pii_mod.REQUIRED),
+                                      ("face-rank", RANK_SCHEMA, rank_mod.REQUIRED)):
             sch = json.loads((ROOT / "schemas" / f"{name}.schema.json").read_text(encoding="utf-8"))
             self.assertEqual(sch["properties"]["schema"]["const"], const)
             self.assertEqual(set(sch["required"]), set(required))
@@ -1099,6 +1101,97 @@ class PiiTests(TmpCase):
         self.assertEqual((rc, out["error"]["code"]), (2, "OUTPUT_IS_INPUT"))
 
 
+# ---- face attributes for frame choice --------------------------------------------------------------
+def blinker(closed_spans, blurred_spans=()):
+    """One face whose measured eyes_open is low while closed, and whose sharpness is low while blurred."""
+    def boxes(t, w, h):
+        closed = any(a <= t < b for a, b in closed_spans)
+        blurred = any(a <= t < b for a, b in blurred_spans)
+        return [{"box": [200.0, 60.0, 160.0, 200.0], "score": 0.9,
+                 "attributes": {"size": 0.55, "yaw_deg": 0.0, "roll_deg": 0.0, "frontal": 0.98,
+                                "sharpness": 60.0 if blurred else 400.0, "mouth_contrast": 0.2,
+                                "eyes_open": 0.15 if closed else 0.85}}]
+    return boxes
+
+
+class RankTests(TmpCase):
+    def faces(self, fn, duration=4.0, every=0.5):
+        video = fake_video(self.tmp, duration=duration)
+        return detect("face", video, every=every, engine=ScriptedEngine("face", fn), ffmpeg_skill=FAKE_FFMPEG_SKILL, attributes=True)
+
+    def test_open_eyes_rank_above_closed_and_sharp_above_blurred(self):
+        det = self.faces(blinker([(1.0, 2.0), (3.0, 4.0)], blurred_spans=[(2.0, 2.4)]))
+        doc = make_rank(det)
+        rep = validate_rank(doc)
+        self.assertTrue(rep.ok, rep.errors)
+        self.assertEqual(doc["schema"], RANK_SCHEMA)
+        order = [f["t"] for f in doc["frames"]]
+        self.assertEqual(order[:3], [0.0, 0.5, 2.5])  # sharp open frames first, in time order
+        self.assertEqual(set(order[3:4]), {2.0})  # then the blurred open frame
+        self.assertEqual(set(order[4:]), {1.0, 1.5, 3.0, 3.5})  # closed eyes last
+        self.assertEqual([f["rank"] for f in doc["frames"]], list(range(1, 9)))
+        top = doc["frames"][0]["faces"][0]
+        self.assertEqual(top["parts"]["eyes_open"], 0.85)
+        self.assertAlmostEqual(top["score"], 0.35 * 0.85 + 0.25 * 400 / 500 + 0.2 * 0.98 + 0.2 * 1.0, places=3)
+        self.assertEqual(len(make_rank(det, top=2)["frames"]), 2)
+
+    def test_eye_share(self):
+        self.assertEqual(eye_share(1.0, 1.0), 1.0)    # r = 0.5: as many edges across the eye as along it
+        self.assertEqual(eye_share(1.0, 3.0), 0.0)    # r = 0.25: mostly the lid line
+        self.assertAlmostEqual(eye_share(7.0, 13.0), 0.5)
+        self.assertIsNone(eye_share(0.0, 0.0))
+
+    def test_frames_without_a_face_and_all_faces(self):
+        def two(t, w, h):
+            out = blinker([])(t, w, h) if t < 3 else []
+            if t < 1:  # a second face that blinks in the first second
+                out.append({"box": [400.0, 60.0, 100.0, 120.0], "score": 0.8,
+                            "attributes": {"size": 0.33, "frontal": None, "sharpness": 300.0, "eyes_open": 0.1}})
+            return out
+        det = self.faces(two)
+        doc = make_rank(det)
+        self.assertTrue(validate_rank(doc).ok, validate_rank(doc).errors)
+        self.assertEqual([f["t"] for f in doc["frames"] if f["rank"] is None], [3.0, 3.5])
+        self.assertEqual(doc["counts"], {"frames": 8, "ranked": 6, "without_face": 2})
+        group = make_rank(det, all_faces=True)
+        self.assertEqual({f["t"] for f in group["frames"][-4:-2]}, {0.0, 0.5})  # the group shot with a blink drops
+        first = next(f for f in doc["frames"] if f["t"] == 0.0)
+        self.assertEqual(sorted(x["missing"] for x in first["faces"]), [[], ["frontal"]])
+        self.assertTrue(any("could not be measured" in w for w in doc["warnings"]))
+
+    def test_refusals_validator_and_cli(self):
+        plain = detect("face", fake_video(self.tmp, name="p.mp4"), every=1.0, engine=ScriptedEngine("face", moving_box),
+                       ffmpeg_skill=FAKE_FFMPEG_SKILL)
+        with self.assertRaises(DetectionError) as cm:
+            make_rank(plain)
+        self.assertIn("--attributes", cm.exception.message)
+        text = detect("text", fake_video(self.tmp, name="t.mp4"), every=1.0, engine=ScriptedEngine("text"), ffmpeg_skill=FAKE_FFMPEG_SKILL)
+        with self.assertRaises(DetectionError):
+            make_rank(text)
+        det = self.faces(blinker([(1.0, 2.0)]))
+        base = make_rank(det)
+        cases = {
+            "order": lambda d: d["frames"].reverse(),
+            "score": lambda d: d["frames"][0]["faces"][0].__setitem__("score", 0.99),
+            "rank": lambda d: d["frames"][1].__setitem__("rank", 7),
+            "identity": lambda d: d["method"].__setitem__("identity", True),
+            "counts": lambda d: d["counts"].__setitem__("ranked", 1),
+        }
+        for name, mutate in cases.items():
+            d = copy.deepcopy(base)
+            mutate(d)
+            self.assertFalse(validate_rank(d).ok, name)
+        p = os.path.join(self.tmp, "faces.json")
+        Path(p).write_text(json.dumps(det), encoding="utf-8")
+        out_p = os.path.join(self.tmp, "rank.json")
+        rc, out = run_cli("rank", p, "-o", out_p, "--top", "3", "--json")
+        self.assertEqual((rc, len(out["frames"]), out["input"]["file"]), (0, 3, "faces.json"), out)
+        rc, out = run_cli("check", out_p, "--json")
+        self.assertEqual((rc, out["schema"], out["ok"]), (0, RANK_SCHEMA, True))
+        rc, out = run_cli("rank", p, "-o", p, "--overwrite", "--json")
+        self.assertEqual((rc, out["error"]["code"]), (2, "OUTPUT_IS_INPUT"))
+
+
 # ---- small pieces ---------------------------------------------------------------------------------
 class PieceTests(unittest.TestCase):
     def test_boxes(self):
@@ -1193,7 +1286,7 @@ class ContractTests(unittest.TestCase):
         self.assertEqual({p["id"] for p in c["provides"]},
                          {"vision.detect_faces", "vision.detect_text", "vision.detect_objects", "vision.track_boxes",
                           "vision.detect_shots", "vision.reframe_path", "vision.active_speaker",
-                          "vision.find_personal_data"})
+                          "vision.find_personal_data", "vision.rank_face_frames"})
         tool_ids = {t["tool_id"] for t in TOOLS}
         for p in c["provides"]:
             self.assertEqual(set(p), {"id", "lifecycle", "tool_id"})
@@ -1621,6 +1714,60 @@ class RealSpeakersTests(TmpCase):
                   f"{'n/a' if err is None else f'{err:.2f}s'} (limit 0.5 s)", end="")
             self.assertEqual([r["camera"] for r in doc["ranges"]], [0, 1, 0, 1], doc["switch"])
             self.assertLessEqual(err, 0.5)
+
+@unittest.skipUnless(HAVE_CV2 and YUNET_FILE and REAL_VIDEO,
+                     "needs YuNet in DETECTION_MODELS_DIR, opencv, ffmpeg and an ffmpeg-skill checkout")
+class RealRankTests(TmpCase):
+    def test_open_and_closed_eyes_are_ranked(self):
+        # The astronaut face (eyes open) and the same face with both eyes closed: each eye, found by YuNet's landmarks,
+        # covered by a soft-edged patch of the cheek's colour with a thin lash line. A 640x360 video at 25 fps:
+        # open 0-1 s, closed 1-2 s, open but blurred (Gaussian, sigma 2.5) 2-3 s, open 3-4 s, closed 4-5 s.
+        import cv2
+        import numpy as np
+        img = cv2.imread(str(FIXTURES / "astronaut.jpg"))
+        face = cv2.resize(img[30:210, 150:300], None, fx=1.5, fy=1.5, interpolation=cv2.INTER_CUBIC)
+        det = cv2.FaceDetectorYN.create(os.path.join(MODELS_DIR, YUNET_FILE), "", (face.shape[1], face.shape[0]), 0.6, 0.3, 50)
+        _n, found = det.detect(face)
+        lm = found[0][4:14].reshape(5, 2)
+        ed = float(np.linalg.norm(lm[1] - lm[0]))
+        skin = np.median(face[150:160, 70:90].reshape(-1, 3), axis=0)
+        mask = np.zeros(face.shape[:2], np.float32)
+        for e in lm[:2]:
+            cv2.ellipse(mask, (int(e[0]), int(e[1])), (int(ed * 0.26), int(ed * 0.14)), 0, 0, 360, 1.0, -1)
+        mask = cv2.GaussianBlur(mask, (7, 7), 0)[..., None]
+        closed = (face * (1 - mask) + skin * mask).astype(np.uint8)
+        for e in lm[:2]:
+            cv2.ellipse(closed, (int(e[0]), int(e[1]) + 1), (int(ed * 0.2), int(ed * 0.06)), 0, 10, 170, (60, 55, 60), 1, cv2.LINE_AA)
+        stills = {"open": face, "closed": closed, "blurred": cv2.GaussianBlur(face, (0, 0), 2.5)}
+        paths = {}
+        for k, im in stills.items():
+            canvas = np.full((360, 640, 3), 128, np.uint8)
+            canvas[45:45 + im.shape[0], 200:200 + im.shape[1]] = im
+            paths[k] = os.path.join(self.tmp, f"{k}.png")
+            cv2.imwrite(paths[k], canvas)
+        plan = ["open", "closed", "blurred", "open", "closed"]
+        argv = ["ffmpeg", "-v", "error", "-y"]
+        for k in plan:
+            argv += ["-loop", "1", "-t", "1", "-r", "25", "-i", paths[k]]
+        graph = "".join(f"[{i}:v]" for i in range(len(plan))) + f"concat=n={len(plan)}:v=1:a=0,format=yuv420p[out]"
+        video = os.path.join(self.tmp, "takes.mp4")
+        subprocess.run(argv + ["-filter_complex", graph, "-map", "[out]", "-r", "25", video], check=True)
+        faces = detect("face", video, every=0.5, models_dir=MODELS_DIR, model=YUNET_FILE, ffmpeg_skill=str(FFMPEG_SKILL_DIR),
+                       attributes=True)
+        doc = make_rank(faces)
+        self.assertTrue(validate_rank(doc).ok, validate_rank(doc).errors)
+        truth = {f["t"]: plan[min(int(f["t"]), len(plan) - 1)] for f in faces["frames"]}
+        got = [(f["t"], truth[f["t"]], f["score"], f["faces"][0]["parts"]["eyes_open"] if f["faces"] else None) for f in doc["frames"]]
+        print(f"\n  rank: {[(t, k, s, e) for t, k, s, e in got]}", end="")
+        self.assertEqual(doc["counts"]["without_face"], 0)
+        kinds = [k for _t, k, _s, _e in got]
+        self.assertEqual(kinds[:4], ["open"] * 4)              # sharp open eyes first
+        self.assertEqual(sorted(kinds[4:]), ["blurred"] * 2 + ["closed"] * 4)
+        sharp = {k: [f["faces"][0]["parts"]["sharpness"] for f in doc["frames"] if truth[f["t"]] == k] for k in ("open", "blurred")}
+        self.assertGreater(min(sharp["open"]), max(sharp["blurred"]))  # the blur is measured
+        eyes = {k: [e for _t, kk, _s, e in got if kk == k] for k in ("open", "closed")}
+        self.assertGreater(min(eyes["open"]), max(eyes["closed"]))
+
 
 if __name__ == "__main__":
     unittest.main()

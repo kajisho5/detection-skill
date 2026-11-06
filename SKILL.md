@@ -1,6 +1,6 @@
 ---
 name: detection-skill
-description: Find faces, text (OCR, Japanese and English, including vertical Japanese) and objects in a video's frames or in an image, as measured boxes with time, pixel box, score and model hash, link them over time into redact-ready rectangles, measure shot boundaries (cuts and dissolves) over every frame, turn face tracks into a reframing path for 9:16, 1:1 or 4:5, say who is speaking and which camera shows them best as a multicam switch list, and flag personal and patient data (ids, dates of birth, names, phones, addresses, faces) on slides for a person to confirm before it is blurred. Use when asked to find (and then blur) faces, name badges, screens or other things in event footage, read text on slides, screenshots or signs, check where people or objects are in a shot, list a video's shots and cuts, plan a vertical / square reframe that follows the speaker, cut a multicam panel or interview to whoever is talking, or check slides for patient data before publishing. Local and offline (YuNet, Tesseract, YOLOX, PySceneDetect on CPU); frames come from ffmpeg-skill. It never identifies anyone.
+description: Find faces, text (OCR, Japanese and English, including vertical Japanese) and objects in a video's frames or in an image, as measured boxes with time, pixel box, score and model hash, link them over time into redact-ready rectangles, measure shot boundaries (cuts and dissolves) over every frame, turn face tracks into a reframing path for 9:16, 1:1 or 4:5, say who is speaking and which camera shows them best as a multicam switch list, and flag personal and patient data (ids, dates of birth, names, phones, addresses, faces) on slides for a person to confirm before it is blurred, and rank frames for a thumbnail by eyes open, sharpness and face angle. Use when asked to find (and then blur) faces, name badges, screens or other things in event footage, read text on slides, screenshots or signs, check where people or objects are in a shot, list a video's shots and cuts, plan a vertical / square reframe that follows the speaker, cut a multicam panel or interview to whoever is talking, check slides for patient data before publishing, or pick a thumbnail frame where nobody blinks. Local and offline (YuNet, Tesseract, YOLOX, PySceneDetect on CPU); frames come from ffmpeg-skill. It never identifies anyone.
 ---
 
 # detection-skill
@@ -18,9 +18,10 @@ Run `detection <command> ... --json` (installed by `pip install -e .`; engines b
 | Boxes over time, rectangles to blur | `detection tracks faces.json -o tracks.json --json` |
 | Shots and cuts, frame accurate | `detection shots talk.mp4 -o shots.json --json` (every frame; `pip install -e '.[shots]'`) |
 | Crop window that follows the speaker | `detection reframe tracks.json --aspect 9:16 --shots shots.json -o reframe.json --json` |
-| Faces with size, pose, sharpness, mouth contrast | `detection faces camA.mp4 --every 0.12 --attributes -o a.json --json` |
+| Faces with size, pose, sharpness, mouth contrast, eyes open | `detection faces camA.mp4 --every 0.12 --attributes -o a.json --json` |
 | Multicam: switch to whoever speaks | `detection speakers --camera a_tracks.json --camera b_tracks.json [--turns turns.json] [--offsets 0,0.42] -o speakers.json --json` |
 | Patient / personal data on slides | `detection pii text.json [--faces faces.json] [--locale intl,ja-JP] -o pii.json --json` |
+| Thumbnail / take candidates | `detection rank faces.json --top 5 -o rank.json --json` (from `faces --attributes`) |
 | Check a file | `detection check faces.json --json` |
 | What this skill declares / needs | `detection contract --json`, `detection doctor --json` |
 
@@ -37,6 +38,8 @@ Model files: `--models-dir` or `DETECTION_MODELS_DIR` (YuNet `face_detection_yun
 
 - **Personal and patient data** before publishing a medical or case talk: `text` (line level; `--lang eng`, or `jpn+eng` for Japanese slides) on the slide images or frames, `faces` for clinical photos, then `pii text.json --faces faces.json` with the locales of the material (`intl` default; add `en-US`, `en-GB` or `ja-JP`). Show every region (`excerpt`, `reason`) to a person; only the confirmed `redact[]` spans go to ffmpeg-skill `redact`.
 
+- **Thumbnail or representative take**: `faces --every 0.5 --attributes` (or `--scenes`) -> `rank --top 5`; hand the best frames' times to thumbnail-skill. Use `--all-faces` for group shots.
+
 ## Report it honestly
 
 - **A face box is not a person.** Say "a face was detected at 12.0 s", never who it is. `label` is always null for faces and the skill has no recognition. Track ids (`track_001`) are not identities either: they say boxes overlapped from one sample to the next; two people crossing can swap ids, and a person leaving and returning gets a new id.
@@ -46,6 +49,7 @@ Model files: `--models-dir` or `DETECTION_MODELS_DIR` (YuNet `face_detection_yun
 - **Shots and reframe are measurements with limits.** Say which engine found the shots and that `gradual` comes from a blend test (PySceneDetect) or a network (TransNetV2). A reframe is a heuristic: report `counts.subject_outside` and each shot's `subject_inside_fraction`; a subject is a box track, not a person.
 - **Speakers is a heuristic too.** Say whether it used mouth motion alone or diarization turns (`method.name`), and that mouth motion is not speech (laughing, chewing, a hand at the mouth move it; a speaker turned away is not seen). Quote `ranges[].reason`; a `SPEAKER_nn` or a track id names nobody. Recommend watching the cut before publishing.
 - **PII is a pattern check.** Every region is `CONFIRM`: ask, never blur or drop on your own. Say which locales were used, that a bare name or a date without its keyword is not found and OCR misreads hide data, so "no region" is not "no personal data". Never paste the matched values into a message; `excerpt` is masked on purpose.
+- **Rank is a suggestion.** `eyes_open` is an edge measure, not a blink detector (glasses, squints, small faces fool it); quote the parts (`eyes_open`, `sharpness`, `frontal`, `size`) and let a person or thumbnail-skill choose.
 - **Missing engine = say so.** Exit 3 means an engine, model file, tessdata language or ffmpeg-skill is missing; relay `doctor`'s install line. Never report "no faces" when the run did not happen.
 - **Provenance.** Each result names the engine, the model, and the model file's sha256 on every box; keep `detections.json` with any redaction made from it.
 

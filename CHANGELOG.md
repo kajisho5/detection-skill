@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `eyes_open` joins `detection faces --attributes` (roadmap step 12, ADR-007): the share of edges across the eye in both eye regions around YuNet's landmarks, rescaled to 0-1 (about 0.8 open, 0.2 closed); null when the head is rolled over 25 degrees. A heuristic.
+- `detection rank` (roadmap step 12, ADR-007): face detections with attributes -> `detection-skill/face-rank@1` (`schemas/face-rank.schema.json`): frames best first by 0.35 eyes open + 0.25 sharpness + 0.20 frontal + 0.20 size (each part listed, missing parts named), `--top N`, `--all-faces` for group shots; frames without a face last. The contract adds `vision.rank_face_frames` (EXPERIMENTAL); `doctor` adds `ready.rank`.
+
 - `detection pii` (roadmap step 11, ADR-006): text detections (+ face detections with `--faces`) -> `detection-skill/pii@1` (`schemas/pii.schema.json`): names, patient ids, dates of birth, phone numbers and addresses found by keyword and format patterns per locale (`intl` by default; `en-US`, `en-GB`, `ja-JP` opt-in, every rule listed in the contract), and faces, each as the line's (face's) box padded to an even-pixel redact rectangle with its rule and reason; joined into redact spans over time. Every region is `CONFIRM`; nothing is removed, the value is masked in `excerpt`. The contract adds `vision.find_personal_data` (EXPERIMENTAL); `doctor` adds `ready.pii`.
 
 - `detection faces --attributes` (ADR-005): each face also gets measured `attributes`: `size` (box height / frame height), `yaw_deg`, `roll_deg`, `frontal` (from the five landmarks), `sharpness` (Laplacian variance at 96x96) and `mouth_contrast`. Heuristics, off by default; `detection tracks` keeps them per box, and the validators check their ranges.

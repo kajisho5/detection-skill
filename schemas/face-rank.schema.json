@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/kajisho5/detection-skill/schemas/face-rank.schema.json",
+  "title": "Face rank",
+  "description": "detection-skill/face-rank@1. A video's sampled frames (or an image) ranked for a thumbnail or a representative take by the measured attributes of their faces (detection faces --attributes): eyes open, sharpness, frontal angle and size, each part and the weighted score listed. Frames without a face follow with a null score. A documented heuristic; a face is never an identity. The validator in src/detection_skill/rank.py is the executable form and also checks the order and that each score is the weighted sum of its parts.",
+  "type": "object",
+  "required": ["schema", "source", "input", "method", "parameters", "frames", "counts", "skill", "skill_version", "tool", "created_at",
+               "processing_seconds", "warnings"],
+  "properties": {
+    "schema": {"const": "detection-skill/face-rank@1"},
+    "source": {"type": "object", "description": "copied from the face detections"},
+    "input": {"type": "object", "required": ["file", "fingerprint", "tool", "frames", "detections", "sampling"]},
+    "method": {"type": "object", "required": ["name", "heuristic", "identity", "note"],
+               "properties": {"name": {"const": "face-quality"}, "heuristic": {"const": true}, "identity": {"const": false}}},
+    "parameters": {"type": "object", "required": ["weights", "sharpness_half", "size_full", "all_faces", "top"],
+                   "properties": {"weights": {"type": "object", "required": ["eyes_open", "sharpness", "frontal", "size"]}}},
+    "frames": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["index", "t", "score", "faces", "best_face", "rank"],
+        "properties": {
+          "index": {"type": "integer", "minimum": 0, "description": "the frame's index in the detections"},
+          "t": {"type": ["number", "null"]},
+          "score": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+          "rank": {"type": ["integer", "null"], "minimum": 1, "description": "1 = best; null for a frame without a face"},
+          "best_face": {"type": ["integer", "null"]},
+          "faces": {
+            "type": "array",
+            "items": {"type": "object", "required": ["face", "box", "score", "parts", "missing", "eyes_open"],
+                      "properties": {"parts": {"type": "object", "required": ["eyes_open", "sharpness", "frontal", "size"],
+                                               "description": "each part in 0-1, null when not measured (counted 0)"},
+                                     "missing": {"type": "array", "items": {"enum": ["eyes_open", "sharpness", "frontal", "size"]}}}}
+          }
+        }
+      }
+    },
+    "counts": {"type": "object", "required": ["frames", "ranked", "without_face"]},
+    "skill": {"const": "detection-skill"},
+    "skill_version": {"type": "string"},
+    "tool": {"const": "detection/rank"},
+    "created_at": {"type": "string"},
+    "processing_seconds": {"type": "number", "minimum": 0},
+    "warnings": {"type": "array", "items": {"type": "string"}}
+  }
+}
