@@ -5,12 +5,12 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "detection-skill"
 version = "0.1.0"
-description = "Faces, text (OCR, ja/en) and objects as measured boxes in time, from frames ffmpeg-skill extracts: YuNet, Tesseract, YOLOX; local, offline, CPU."
+description = "Faces, text (OCR, ja/en) and objects as measured boxes in time, shot boundaries and reframing paths, from frames ffmpeg-skill extracts: YuNet, Tesseract, YOLOX, PySceneDetect; local, offline, CPU."
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.9"
 authors = [{name = "kajisho5"}]
-keywords = ["face-detection", "ocr", "object-detection", "yunet", "tesseract", "yolox", "redaction", "offline", "agent-skill", "video-production"]
+keywords = ["face-detection", "ocr", "object-detection", "yunet", "tesseract", "yolox", "redaction", "shot-boundary-detection", "reframing", "offline", "agent-skill", "video-production"]
 dependencies = []
 
 [project.optional-dependencies]
@@ -19,7 +19,10 @@ faces = ["opencv-python-headless>=4.8.1.78", "numpy>=1.22"]
 # OCR needs no Python package: it runs the `tesseract` binary (apt/brew/choco) with jpn, jpn_vert and eng traineddata.
 text = []
 objects = ["onnxruntime>=1.16", "opencv-python-headless>=4.8.1.78", "numpy>=1.22"]
-all = ["opencv-python-headless>=4.8.1.78", "onnxruntime>=1.16", "numpy>=1.22"]
+# Shots (ADR-003): PySceneDetect's detectors on frames ffmpeg-skill decodes. 0.7 requires opencv-python (not -headless)
+# and Python 3.10, so the range stays on 0.6.x. TransNetV2 (optional) runs through the objects extra's onnxruntime.
+shots = ["scenedetect>=0.6.7,<0.7", "opencv-python-headless>=4.8.1.78", "numpy>=1.22"]
+all = ["opencv-python-headless>=4.8.1.78", "onnxruntime>=1.16", "numpy>=1.22", "scenedetect>=0.6.7,<0.7"]
 
 [project.scripts]
 detection = "detection_skill.cli:main"

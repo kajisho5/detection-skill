@@ -26,6 +26,10 @@ FACE_MODEL_GLOB_PREFIX = "face_detection_yunet_"
 OBJECT_MODEL_PREFERENCE = ("yolox_s.onnx", "yolox_tiny.onnx", "yolox_nano.onnx", "yolox_m.onnx", "yolox_l.onnx",
                            "yolox_x.onnx", "yolox_darknet.onnx")
 OBJECT_MODEL_PREFIX = "yolox_"
+# Optional (ADR-003): an ONNX export of TransNetV2 for shot boundaries. No file is known by sha256 yet: the skill
+# has not measured one, so any file runs with its measured sha256 and a warning.
+SHOT_MODEL_DEFAULT = "transnetv2.onnx"
+SHOT_MODEL_PREFIX = "transnetv2"
 
 # sha256 -> what the file is. Measured on 2026-10-30 from the upstream sources named in README.
 KNOWN_MODELS: Dict[str, Dict[str, str]] = {
@@ -40,7 +44,7 @@ KNOWN_TESSDATA: Dict[str, Dict[str, str]] = {
     "36bdf9ac823f5911e624c30d0553e890b8abc7c31a65b3ef14da943658c40b79": {"lang": "jpn", "variant": "tessdata_best"},
     "1258be6eb2a9851f18043234ad18cca13ed32690bfff62b335c898bbea371548": {"lang": "jpn_vert", "variant": "tessdata_best"},
 }
-MODEL_LICENSES = {"face": "MIT", "object": "Apache-2.0", "text": "Apache-2.0"}
+MODEL_LICENSES = {"face": "MIT", "object": "Apache-2.0", "text": "Apache-2.0", "shot": "MIT"}
 REQUIRED_LANGS = ("jpn", "jpn_vert", "eng")
 LFS_POINTER = b"version https://git-lfs"
 
@@ -77,7 +81,7 @@ def describe_file(path: str) -> Dict[str, Any]:
 
 
 def find_model(kind: str, models_dir: Optional[str], name: Optional[str] = None) -> str:
-    """Path of the ONNX file for `kind` ('face' or 'object'). `name` is a file name inside the models directory
+    """Path of the ONNX file for `kind` ('face', 'object' or 'shot'). `name` is a file name inside the models directory
     (or a path to a file). Raises MODEL_NOT_FOUND with the reason."""
     if name and (os.sep in name or (os.altsep and os.altsep in name)) and os.path.isfile(name):
         path = os.path.abspath(name)
@@ -89,7 +93,7 @@ def find_model(kind: str, models_dir: Optional[str], name: Optional[str] = None)
             raise DetectionError("MODEL_NOT_FOUND", f"models directory does not exist: {os.path.basename(models_dir)}")
         path = os.path.join(models_dir, name) if name else _default_model(kind, models_dir)
         if not path or not os.path.isfile(path):
-            want = name or (FACE_MODEL_DEFAULT if kind == "face" else " or ".join(OBJECT_MODEL_PREFERENCE[:3]))
+            want = name or {"face": FACE_MODEL_DEFAULT, "shot": SHOT_MODEL_DEFAULT}.get(kind) or " or ".join(OBJECT_MODEL_PREFERENCE[:3])
             raise DetectionError("MODEL_NOT_FOUND", f"{want} not found in the models directory",
                                  "run `detection doctor` for where to get the model files")
     if is_lfs_pointer(path):
@@ -106,6 +110,11 @@ def _default_model(kind: str, models_dir: str) -> Optional[str]:
             return os.path.join(models_dir, FACE_MODEL_DEFAULT)
         yunet = [n for n in names if n.startswith(FACE_MODEL_GLOB_PREFIX) and n.endswith(".onnx")]
         return os.path.join(models_dir, yunet[-1]) if yunet else None
+    if kind == "shot":
+        if SHOT_MODEL_DEFAULT in names:
+            return os.path.join(models_dir, SHOT_MODEL_DEFAULT)
+        tn = [n for n in names if n.lower().startswith(SHOT_MODEL_PREFIX) and n.endswith(".onnx")]
+        return os.path.join(models_dir, tn[0]) if tn else None
     for n in OBJECT_MODEL_PREFERENCE:
         if n in names:
             return os.path.join(models_dir, n)
@@ -114,16 +123,18 @@ def _default_model(kind: str, models_dir: str) -> Optional[str]:
 
 
 def inspect_models(models_dir: Optional[str]) -> Dict[str, Any]:
-    """doctor's view of the models directory, per kind: OK / MISSING / INCOMPLETE (an LFS pointer)."""
+    """doctor's view of the models directory, per kind: OK / MISSING / INCOMPLETE (an LFS pointer). 'shot' is the
+    optional TransNetV2 file (ADR-003)."""
     out: Dict[str, Any] = {"dir_set": bool(models_dir), "dir_exists": bool(models_dir and os.path.isdir(models_dir))}
-    for kind in ("face", "object"):
+    for kind in ("face", "object", "shot"):
         entry: Dict[str, Any] = {"status": "MISSING", "file": None, "sha256": None, "known": None, "detail": None}
         if not out["dir_exists"]:
             entry["detail"] = f"no models directory (--models-dir or ${ENV_MODELS_DIR})"
         else:
             path = _default_model(kind, models_dir)  # type: ignore[arg-type]
             if not path:
-                entry["detail"] = "no " + (FACE_MODEL_DEFAULT if kind == "face" else "yolox_*.onnx") + " in the models directory"
+                entry["detail"] = "no " + {"face": FACE_MODEL_DEFAULT, "shot": SHOT_MODEL_DEFAULT}.get(kind, "yolox_*.onnx") + \
+                    " in the models directory"
             elif is_lfs_pointer(path):
                 entry.update(status="INCOMPLETE", file=os.path.basename(path), detail="Git LFS pointer, not the model (git lfs pull)")
             else:

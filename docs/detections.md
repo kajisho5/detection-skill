@@ -1,6 +1,6 @@
-# Detections (`detection-skill/detections@1`) and tracks (`detection-skill/tracks@1`)
+# Detections (`detection-skill/detections@1`), tracks (`detection-skill/tracks@1`), shots (`detection-skill/shots@1`) and reframe (`detection-skill/reframe@1`)
 
-JSON Schemas: `schemas/detections.schema.json`, `schemas/tracks.schema.json`. The validators in `src/detection_skill/detections.py` and `src/detection_skill/tracks.py` are the executable form; `detection check <file>` runs the right one by the document's `schema`.
+JSON Schemas: `schemas/detections.schema.json`, `schemas/tracks.schema.json`, `schemas/shots.schema.json`, `schemas/reframe.schema.json`. The validators in `src/detection_skill/detections.py`, `tracks.py`, `shots.py` and `reframe.py` are the executable form; `detection check <file>` runs the right one by the document's `schema`.
 
 ## Detections
 
@@ -63,3 +63,44 @@ Rules the validator checks: frames in time order inside the duration; boxes insi
 | `parameters` | `min_iou`, `max_shift`, `max_gap`, `pad`, `extend`, `window`, `min_hits`, `same_label` |
 | `tracks` | `[{id: track_001, label, start, end, hits, mean_score, max_score, boxes: [{t, box, score}], redact: [{start, end, x, y, width, height}]}]`; face tracks have `label: null`, text tracks the most frequent OCR text |
 | `counts` | `tracks`, `boxes_linked`, `boxes_dropped` (in tracks under `--min-hits`), `redact_rects` |
+
+## Shots
+
+`detection shots video.mp4 -o shots.json` measures shot boundaries over **every frame** (ADR-003). It is the frame-accurate shot list; ffmpeg-skill `scenes` stays the quick cut list.
+
+- **Frames.** ffmpeg-skill `probe` gives the exact frame rate (`r_frame_rate`) and the frame count (`nb_frames`, else duration x rate). Frame k is asked for with `look --at T --no-timecode --width 320`, T its time rounded down to the millisecond: `look` returns the first frame at or after T. About 0.07 s per frame; `--max-frames` (default 20000) refuses a longer video.
+- **Default engine: PySceneDetect** (`pyscenedetect`). ContentDetector (`--threshold`, default 27) and AdaptiveDetector find hard cuts; a cut is reported on the first frame of the new shot. A blend test finds gradual transitions (dissolves, fades): a run of frames that are each the average of the frames 0.16 s either side, while those two differ. A detector cut inside such a run is the same transition and is absorbed. Boundaries closer than `--min-shot-frames` (default 15) keep the stronger one.
+- **Optional engine: TransNetV2** (`--engine transnetv2`) with `transnetv2.onnx` in the models directory; `doctor` reports it `MISSING` (optional) otherwise and the default engine is unaffected.
+
+| field | meaning |
+|---|---|
+| `schema` | `detection-skill/shots@1` |
+| `source` | as in detections (`media_type: video`, `fps` the exact rate) |
+| `frames` | `method: every_frame`, `frame_rate`, `frame_count`, `seek_rule`, `frames_tool` (`ffmpeg-skill/look`), `ffmpeg_skill_version`, `extracted_size` |
+| `engine` | `id` (`pyscenedetect` / `transnetv2`), `kind: shot`, `version`, `runtime`, `model`, `model_sha256` (null for PySceneDetect: no model file), `model_license`, `engine_license`, `files`, `execution_mode`, `engine_seconds`, `details` |
+| `parameters` | the engine's: `threshold`, `adaptive_threshold`, `min_content_val`, `min_shot_frames`, `blend_half_window`, `blend_far_min`, `blend_ratio_max`, `blend_width` (PySceneDetect); `threshold`, `input_size` (TransNetV2) |
+| `boundaries` | `[{index, frame, t, kind, score, transition, engine, metric}]`: `frame` is the first frame of the next shot (for gradual, the middle of the transition), `t` = frame / rate, `kind` `cut` or `gradual`, `score` 0-1 (comparable within one engine), `transition` null for a cut and `{start_frame, end_frame, start, end, frames}` (the blended frames, inclusive) for gradual, `metric` the raw values (`content_val`, `adaptive_ratio`, `detectors`; `blend_ratio_min`, `blend_far_max`; `probability`) |
+| `shots` | `[{id: shot_001, index, start_frame, end_frame, frames, start, end, duration, starts_with, score, engine}]`, contiguous, covering every frame; `end_frame` inclusive, `start` = start_frame / rate, `end` = (end_frame + 1) / rate (the duration for the last), `starts_with` `start` / `cut` / `gradual`, `score` of the starting boundary (null for the first) |
+| `counts` | `frames`, `shots`, `boundaries`, `cuts`, `gradual` |
+
+## Reframe (a heuristic)
+
+`detection reframe faces-tracks.json --aspect 9:16 --shots shots.json -o reframe.json` gives a crop window per sample time (ADR-004). It chooses windows; it crops nothing (video-editing-skill and the engine apply them).
+
+- **Window.** The largest even-pixel window of `--aspect` (`9:16`, `1:1`, `4:5`, any `W:H`) inside the frame, the same size throughout.
+- **Subject.** Per shot (the whole video without `--shots`), the face track with the most presence in the rest of the shot; kept until its track ends, then the next one in view. `--objects object-tracks.json` adds object tracks (`--object-classes`, default `person`) as the fallback when no face is in view. Nobody in view: the window holds. Every change is in `switches` with its reason.
+- **Smoothing.** Inside a shot the window centre follows the subject's box centre with a dead zone (`--dead-zone`, 0.1 window width) and a speed limit (`--max-speed`, 0.6 window widths per second): it never jumps inside a shot. At a shot boundary it is placed on the new subject directly. It is kept inside the frame.
+- **One window per shot.** `shots[]` gives one fixed window per shot for an engine without a time-varying crop (ffmpeg-skill today), with the fraction of samples whose subject box it contains.
+
+| field | meaning |
+|---|---|
+| `schema` | `detection-skill/reframe@1` |
+| `source`, `frame_size` | copied from the face tracks |
+| `aspect`, `window` | `{name, ratio}`, `{width, height}` (even pixels) |
+| `inputs` | `faces`, `objects`, `shots`: `file` (bare name), `fingerprint` (sha256 of the file bytes), `tool`, and `kind` / `tracks` / `sampling_step` or `engine` / `shots` |
+| `method` | `name: subject-path`, `heuristic: true`, `identity: false`, `note` |
+| `parameters` | `dead_zone`, `max_speed` (fractions of the window width), `dead_zone_px`, `max_speed_px_per_s`, `object_classes` |
+| `windows` | `[{t, shot, x, y, width, height, subject, subject_box, subject_inside}]`: `subject` is `face/track_nnn`, `object/track_nnn` or null; `subject_inside` whether its box lies inside the window |
+| `switches` | `[{t, shot, from, to, reason}]` |
+| `shots` | `[{index, start, end, subject, x, y, width, height, subject_inside_fraction}]` |
+| `counts` | `windows`, `switches`, `shots`, `subject_outside` |

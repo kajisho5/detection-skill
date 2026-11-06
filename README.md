@@ -15,9 +15,9 @@
 <p align="center"><b>Faces, text and objects, as boxes in time</b></p>
 
 
-Faces, text and objects in video frames, as measured boxes in time, for the [AI Video Production OS](https://github.com/kajisho5/AI-video-production-OS) (department 認識 / Recognition). Each box carries the frame time, the box in pixels and normalized, a score, and the engine, model and model-file sha256 that produced it. Boxes over time become redact-ready rectangles for [ffmpeg-skill](https://github.com/kajisho5/ffmpeg-skill) `redact`.
+Faces, text and objects in video frames, as measured boxes in time, for the [AI Video Production OS](https://github.com/kajisho5/AI-video-production-OS) (department 認識 / Recognition). Each box carries the frame time, the box in pixels and normalized, a score, and the engine, model and model-file sha256 that produced it. Boxes over time become redact-ready rectangles for [ffmpeg-skill](https://github.com/kajisho5/ffmpeg-skill) `redact`. It also measures shot boundaries over every frame (cuts and dissolves) and turns face tracks into a reframing path (a crop window per time for 9:16, 1:1, 4:5).
 
-Local, offline, CPU first ([ADR-001](docs/decisions.md)): faces with [YuNet](https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet) (MIT) through OpenCV, text with [Tesseract 5](https://github.com/tesseract-ocr/tesseract) and [tessdata_best](https://github.com/tesseract-ocr/tessdata_best) `jpn` / `jpn_vert` / `eng` (Apache-2.0), objects with [YOLOX](https://github.com/Megvii-BaseDetection/YOLOX) (Apache-2.0) through ONNX Runtime. Every engine is optional. Frames of a video come from ffmpeg-skill `look` and `scenes`; this skill never decodes video and never downloads anything. A face box is never an identity.
+Local, offline, CPU first ([ADR-001](docs/decisions.md)): faces with [YuNet](https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet) (MIT) through OpenCV, text with [Tesseract 5](https://github.com/tesseract-ocr/tesseract) and [tessdata_best](https://github.com/tesseract-ocr/tessdata_best) `jpn` / `jpn_vert` / `eng` (Apache-2.0), objects with [YOLOX](https://github.com/Megvii-BaseDetection/YOLOX) (Apache-2.0) through ONNX Runtime, shots with [PySceneDetect](https://github.com/Breakthrough/PySceneDetect) (BSD-3-Clause; [TransNetV2](https://github.com/soCzech/TransNetV2), MIT, optional, [ADR-003](docs/decisions.md)). Every engine is optional. Frames of a video come from ffmpeg-skill `look` and `scenes`; this skill never decodes video and never downloads anything. A face box is never an identity.
 
 ```bash
 pip install -e '.[all]'                       # the skill + OpenCV + ONNX Runtime (faces and objects)
@@ -27,9 +27,11 @@ detection faces talk.mp4 --every 0.5 -o faces.json
 detection tracks faces.json -o tracks.json    # redact rectangles per face track
 detection text slide.png -o text.json         # jpn+eng by default
 detection objects hall.mp4 --every 2 --classes person,laptop -o objects.json
+detection shots talk.mp4 -o shots.json        # every frame: cuts and dissolves
+detection reframe tracks.json --aspect 9:16 --shots shots.json -o reframe.json
 ```
 
-`tracks` and `check` need only the Python standard library (`pip install -e .`, Python >= 3.9).
+`tracks`, `reframe` and `check` need only the Python standard library (`pip install -e .`, Python >= 3.9).
 
 ## Install, per engine
 
@@ -38,6 +40,7 @@ detection objects hall.mp4 --every 2 --classes person,laptop -o objects.json
 | Faces: YuNet | `pip install -e '.[faces]'` (opencv-python-headless) | `face_detection_yunet_2026may.onnx` from [OpenCV Zoo](https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet), **MIT**. A Git LFS file: download it from the GitHub page, or `git lfs pull` in a clone. Put it in `$DETECTION_MODELS_DIR` |
 | Text: Tesseract 5 | the `tesseract` binary: `apt install tesseract-ocr tesseract-ocr-jpn tesseract-ocr-jpn-vert`, `brew install tesseract tesseract-lang`, or `choco install tesseract` | `jpn.traineddata`, `jpn_vert.traineddata`, `eng.traineddata` from [tessdata_best](https://github.com/tesseract-ocr/tessdata_best), **Apache-2.0**, in a directory set as `--tessdata-dir` / `$DETECTION_TESSDATA_DIR`. Without it, Tesseract's own data is used (on Ubuntu, the `tessdata` variant from apt) and every result says which variant it was |
 | Objects: YOLOX | `pip install -e '.[objects]'` (onnxruntime, opencv-python-headless) | a YOLOX ONNX file from the [YOLOX releases](https://github.com/Megvii-BaseDetection/YOLOX/releases) (e.g. `yolox_s.onnx`, or `yolox_nano.onnx` for speed), **Apache-2.0**, in `$DETECTION_MODELS_DIR`. COCO's 80 classes |
+| Shots: PySceneDetect | `pip install -e '.[shots]'` (scenedetect `>=0.6.7 <0.7`, opencv-python-headless) | none. Optional `--engine transnetv2`: an ONNX export of [TransNetV2](https://github.com/soCzech/TransNetV2) (code and weights **MIT**) as `transnetv2.onnx` in `$DETECTION_MODELS_DIR`, run by ONNX Runtime (`[objects]`); `doctor` reports it `MISSING` (optional) until then |
 | Frames of a video | [ffmpeg-skill](https://github.com/kajisho5/ffmpeg-skill) 2.x or 3.x and FFmpeg (3.x needs Python 3.10+ and FFmpeg 6.1+) | `git clone https://github.com/kajisho5/ffmpeg-skill ~/.claude/skills/ffmpeg-skill`, or `--ffmpeg-skill` / `$DETECTION_FFMPEG_SKILL_DIR` |
 
 Model files are identified by sha256, measured on every run and written into every result. The skill knows these files (`detection contract --json`, `engines.known_model_sha256`):
@@ -60,7 +63,9 @@ Another file (for example `yolox_s.onnx`) still runs: its measured sha256 is rec
 | `text <video\|image> [...] [--lang jpn+eng] [--vertical] [--psm N] [--level line\|word] [--tessdata-dir DIR]` | Text lines (or words) with their OCR text |
 | `objects <video\|image> [...] [--classes person,...] [--min-score 0.3]` | Object boxes with COCO class names |
 | `tracks <det.json> -o tracks.json [--min-iou 0.3] [--max-shift 1.0] [--max-gap S] [--pad 0.15] [--extend S] [--window S] [--min-hits 1]` | Boxes linked over time by IoU into track ids, with even-pixel redact rectangles per span (a heuristic, [docs/detections.md](docs/detections.md#tracks-a-heuristic)) |
-| `check <det.json\|tracks.json>` | Validate a detections or tracks document |
+| `shots <video> [--engine pyscenedetect\|transnetv2] [--threshold X] [--min-shot-frames 15] [--width 320] [--max-frames 20000] [-o shots.json]` | Shot boundaries over every frame: each shot's start/end in frames and seconds, cut / gradual, a score, the engine ([`detection-skill/shots@1`](docs/detections.md#shots)) |
+| `reframe <face-tracks.json> -o reframe.json [--aspect 9:16] [--shots shots.json] [--objects object-tracks.json] [--dead-zone 0.1] [--max-speed 0.6]` | A crop window per sample time following the subject, jumping only at a shot boundary, plus one window per shot (a heuristic, [`detection-skill/reframe@1`](docs/detections.md#reframe-a-heuristic)) |
+| `check <det.json\|tracks.json\|shots.json\|reframe.json>` | Validate a detections, tracks, shots or reframe document |
 | `contract --json` | Machine-readable contract in the OS registry's shape |
 | `doctor --json [--models-dir DIR] [--tessdata-dir DIR] [--ffmpeg-skill DIR]` | Python, ffmpeg-skill, OpenCV, ONNX Runtime, the model files, Tesseract and its languages; `MISSING` entries carry install lines |
 
@@ -71,17 +76,21 @@ Common options: `--max-frames 2000` (refuses a bigger sampling plan), `--timeout
 - **Frames.** For a video: ffmpeg-skill `probe` (duration, size, rotation), `scenes` for `--scenes`, then `look --at T ... --no-timecode --width <source width> --json`, which writes PNG frames into a private temporary directory (deleted afterwards). An image is its own single frame.
 - **Engines.** The engine runs in a worker subprocess (`python -m detection_skill.engines.worker`) in its own process group, killed on `--timeout`. Model files are found and hashed before any frame is made, so a missing model fails fast with exit 3.
 - **Boxes.** Engine boxes are scaled from the extracted frame to the source size, clipped to the frame, and written with `box_norm`, the score and the provenance. The document is validated before it is returned or written.
+- **Shots.** Every frame through `look --at` (frame k at its time rounded down to the millisecond, 320 px wide), PySceneDetect's ContentDetector and AdaptiveDetector for cuts, a blend test for dissolves and fades ([ADR-003](docs/decisions.md)).
+- **Reframe.** Per shot, the face track with the most presence is the subject; the window follows its centre with a dead zone and a speed limit and jumps only at a shot boundary ([ADR-004](docs/decisions.md)).
 - **Tracks.** Greedy IoU linking between consecutive samples (with a centre-distance fallback for motion faster than the sampling); redact rectangles are the padded union of a track's boxes, snapped to even pixels, extended by one sampling step on each side. Documented as a heuristic, not identity.
 
 ## Measured here
 
-On the fixtures in `tests/` (2026-10-30, CPU, this repository's tests):
+On the fixtures in `tests/` (2026-10-30; shots and reframe 2026-11-06; CPU, this repository's tests):
 
 | What | Result |
 |---|---|
 | YuNet 2026may, 5 faces about 23 px to 276 px wide in one 1920x1080 frame | recall 5/5, precision 5/5 at IoU 0.5 (IoU 0.76-0.90 against hand-drawn boxes) |
 | YuNet on a face moving 60 px/s, sampled every 0.2 s through ffmpeg-skill look | 20/20 frames with the face, 1 track |
 | YOLOX-Nano: person, cat, cup in three photos | 3/3 found at IoU >= 0.5 (0.97, 0.89, 0.87) |
+| PySceneDetect 0.6.7.1, 225-frame fixture (six lavfi sources, 3 hard cuts, 2 cross-dissolves of 20 and 25 frames) | every hard cut on its frame (50, 120, 185), no extra cut; both dissolves found as gradual (middle frame 80 and 148 inside the blends 70-89 and 135-159) |
+| Reframe from YuNet tracks + shots: a face walking 105 px/s across 960x540, then a cut | face inside the window in 40/40 sampled frames for 9:16 (302x540), 1:1 and 4:5; fastest move inside a shot 120 px/s against a limit of 181 px/s (9:16) |
 | Tesseract 5.3.4, rendered slide text (Noto Sans CJK, 44 px) | Japanese CER 0.019 (apt `tessdata`) / 0.057 (`tessdata_best`); English CER 0.000 with both; vertical Japanese (`jpn_vert`) CER 0.000 |
 
 These are small synthetic fixtures that prove the plumbing and give a floor, not a benchmark. Real event footage (motion blur, small faces, low light, stylised slide fonts) will do worse; measure on your own material before relying on it. On these fixtures `tessdata_best` was not better than apt's `tessdata` for Japanese (it misread 第二章), so the ADR's follow-up (a Japanese CER comparison on real slides, and RapidOCR) stays open.
@@ -92,10 +101,10 @@ These are small synthetic fixtures that prove the plumbing and give a floor, not
 python -m unittest discover -s tests -v
 ```
 
-Unit tests inject a test-only engine (`tests/fake_engine.py`, never registered) and a fake ffmpeg-skill (`tests/fake_ffmpeg_skill`, the real tools' JSON shapes, PNG frames written with the standard library), so they run anywhere without engines, models or FFmpeg. They cover the schema and its validator, sampling, scaling and clipping, the worker and its timeout kill, tracks, the CLI, doctor and the contract. Tests that need more skip with the reason: frames through a real ffmpeg-skill checkout (`FFMPEG_SKILL_DIR` or `../ffmpeg-skill`) and FFmpeg; the OS registry conformance checks (`AI_VIDEO_PRODUCTION_OS_DIR` or `../AI-video-production-OS`); the real engines (`DETECTION_MODELS_DIR` with the YuNet / YOLOX files and the Python packages; `tesseract` with `jpn`, `jpn_vert`, `eng`, plus Pillow and a Japanese font, `DETECTION_TEST_FONT`, to render the OCR fixture). CER limits: `DETECTION_CER_JA` (default 0.10), `DETECTION_CER_EN` (default 0.05). CI's integration job installs everything (the two model files are fetched by the job and checked against the sha256 above) and fails if any test skips.
+Unit tests inject a test-only engine (`tests/fake_engine.py`, never registered) and a fake ffmpeg-skill (`tests/fake_ffmpeg_skill`, the real tools' JSON shapes, PNG frames written with the standard library), so they run anywhere without engines, models or FFmpeg. They cover the schemas and their validators, sampling, scaling and clipping, the worker and its timeout kill, tracks, shots (frame times, contiguous shots, the blend and TransNetV2 arithmetic), reframe, the CLI, doctor and the contract. Tests that need more skip with the reason: frames through a real ffmpeg-skill checkout (`FFMPEG_SKILL_DIR` or `../ffmpeg-skill`) and FFmpeg; the OS registry conformance checks (`AI_VIDEO_PRODUCTION_OS_DIR` or `../AI-video-production-OS`); the real engines (`DETECTION_MODELS_DIR` with the YuNet / YOLOX files and the Python packages; `scenedetect` for shots; `tesseract` with `jpn`, `jpn_vert`, `eng`, plus Pillow and a Japanese font, `DETECTION_TEST_FONT`, to render the OCR fixture). CER limits: `DETECTION_CER_JA` (default 0.10), `DETECTION_CER_EN` (default 0.05). CI's integration job installs everything (the two model files are fetched by the job and checked against the sha256 above) and fails if any test skips.
 
 Fixture images: `tests/fixtures/astronaut.jpg` (NASA portrait of Eileen Collins, public domain), `chelsea.jpg` and `coffee.jpg` (CC0), as shipped in scikit-image's `data` module.
 
 ## License
 
-The code is MIT (see `LICENSE`). Model files are not part of this repository and keep their own licences: YuNet (MIT), Tesseract and tessdata (Apache-2.0), YOLOX (Apache-2.0).
+The code is MIT (see `LICENSE`). Model files are not part of this repository and keep their own licences: YuNet (MIT), Tesseract and tessdata (Apache-2.0), YOLOX (Apache-2.0), TransNetV2 (MIT). PySceneDetect is BSD-3-Clause.

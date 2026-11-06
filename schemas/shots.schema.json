@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/kajisho5/detection-skill/schemas/shots.schema.json",
+  "title": "Shots",
+  "description": "detection-skill/shots@1. Shot boundaries measured over every frame of a video (frames from ffmpeg-skill look): boundaries with the frame that starts the next shot, kind (cut / gradual), score and engine, and contiguous shots covering every frame. The validator in src/detection_skill/shots.py is the executable form and also checks that shots cover every frame in order, that each shot starts at its boundary, counts and leakage (paths, credentials).",
+  "type": "object",
+  "required": ["schema", "source", "frames", "engine", "parameters", "boundaries", "shots", "counts", "skill", "skill_version",
+               "tool", "created_at", "processing_seconds", "warnings"],
+  "properties": {
+    "schema": {"const": "detection-skill/shots@1"},
+    "source": {"type": "object", "description": "as in detections: filename, fingerprint, size_bytes, media_type 'video', duration, width, height, fps"},
+    "frames": {
+      "type": "object",
+      "required": ["method", "frame_rate", "frame_count", "seek_rule", "frames_tool", "ffmpeg_skill_version", "extracted_size"],
+      "properties": {
+        "method": {"const": "every_frame"},
+        "frame_rate": {"type": "number", "exclusiveMinimum": 0, "description": "exact rate from probe's r_frame_rate"},
+        "frame_count": {"type": "integer", "minimum": 1},
+        "seek_rule": {"type": "string"},
+        "frames_tool": {"const": "ffmpeg-skill/look"},
+        "ffmpeg_skill_version": {"type": "string"},
+        "extracted_size": {"type": "object", "required": ["width", "height"]}
+      }
+    },
+    "engine": {
+      "type": "object",
+      "required": ["id", "kind", "version", "runtime", "model", "model_sha256", "model_license", "engine_license", "files", "execution_mode", "engine_seconds"],
+      "properties": {
+        "id": {"enum": ["pyscenedetect", "transnetv2"]},
+        "kind": {"const": "shot"},
+        "model_sha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$", "description": "null for PySceneDetect (no model file)"},
+        "files": {"type": "array"},
+        "execution_mode": {"enum": ["local", "remote"]}
+      }
+    },
+    "parameters": {"type": "object", "description": "the engine's parameters (thresholds, min_shot_frames, blend test settings)"},
+    "boundaries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["index", "frame", "t", "kind", "score", "transition", "engine", "metric"],
+        "properties": {
+          "index": {"type": "integer", "minimum": 0},
+          "frame": {"type": "integer", "minimum": 1, "description": "first frame of the next shot (gradual: the middle of the transition)"},
+          "t": {"type": "number", "minimum": 0, "description": "frame / frame_rate, seconds"},
+          "kind": {"enum": ["cut", "gradual"]},
+          "score": {"type": "number", "minimum": 0, "maximum": 1, "description": "engine-specific strength, comparable within one engine"},
+          "transition": {
+            "type": ["object", "null"],
+            "required": ["start_frame", "end_frame", "start", "end", "frames"],
+            "description": "null for a cut; for gradual, the blended frames (inclusive)"
+          },
+          "engine": {"type": "string"},
+          "metric": {"type": "object", "description": "raw measures: content_val, adaptive_ratio, detectors; blend_ratio_min; probability"}
+        }
+      }
+    },
+    "shots": {
+      "type": "array", "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "index", "start_frame", "end_frame", "frames", "start", "end", "duration", "starts_with", "score", "engine"],
+        "properties": {
+          "id": {"type": "string", "pattern": "^shot_\\d{3,}$"},
+          "index": {"type": "integer", "minimum": 0},
+          "start_frame": {"type": "integer", "minimum": 0},
+          "end_frame": {"type": "integer", "minimum": 0, "description": "inclusive"},
+          "frames": {"type": "integer", "minimum": 1},
+          "start": {"type": "number", "description": "start_frame / frame_rate"},
+          "end": {"type": "number", "description": "(end_frame + 1) / frame_rate, the duration for the last shot"},
+          "duration": {"type": "number"},
+          "starts_with": {"enum": ["start", "cut", "gradual"]},
+          "score": {"type": ["number", "null"], "description": "the starting boundary's score; null for the first shot"},
+          "engine": {"type": "string"}
+        }
+      }
+    },
+    "counts": {"type": "object", "required": ["frames", "shots", "boundaries", "cuts", "gradual"]},
+    "skill": {"const": "detection-skill"},
+    "skill_version": {"type": "string"},
+    "tool": {"const": "detection/shots"},
+    "created_at": {"type": "string"},
+    "processing_seconds": {"type": "number", "minimum": 0},
+    "warnings": {"type": "array", "items": {"type": "string"}}
+  }
+}

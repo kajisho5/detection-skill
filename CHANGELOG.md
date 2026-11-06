@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- `detection shots` (roadmap step 8, ADR-003): shot boundaries over every frame of a video, as `detection-skill/shots@1` (`schemas/shots.schema.json`): each shot's first/last frame and start/end seconds, the boundary kind (`cut` / `gradual`), a 0-1 score and the engine. Frames come from ffmpeg-skill `look --at` (frame k at its time rounded down to the millisecond). Default engine PySceneDetect (BSD-3-Clause, ContentDetector + AdaptiveDetector) with a blend test for dissolves and fades; optional TransNetV2 (MIT) as `transnetv2.onnx` through ONNX Runtime, which `doctor` reports `MISSING` (optional, under `notes` / `optional_ready`) without failing doctor or the default op. New extra `[shots]` (`scenedetect>=0.6.7,<0.7`), also in `[all]`.
+- `detection reframe` (roadmap step 9, ADR-004): face tracks (+ object tracks with `--objects`, + shots with `--shots`) -> `detection-skill/reframe@1` (`schemas/reframe.schema.json`): a crop window per sample time for `--aspect` (9:16, 1:1, 4:5, ...), following the subject with a dead zone and a speed limit, switching subject and jumping only at a shot boundary, every switch with its reason, and one fixed window per shot. A documented heuristic; it crops nothing.
+- `detection check` validates shots and reframe documents; the contract adds `vision.detect_shots` and `vision.reframe_path` (EXPERIMENTAL); `doctor` adds `scenedetect` and the optional `transnetv2_model`, and `ready.shots` / `ready.reframe`.
+- Measured on the CI fixtures: every hard cut within one frame (on its frame) and both dissolves found on a 225-frame lavfi fixture; a face walking across the frame stays inside the 9:16 / 1:1 / 4:5 window in every sampled frame.
+
 - Accept ffmpeg-skill 3.x: the dependency range is `>=2.0.0 <4.0.0` (contract, `detection doctor`, frame extraction). The tools used (`probe`, `scenes`, `look`) did not change in 3.0.0; its `cut.py` changes do not reach this skill (ADR-002).
 - ffmpeg-skill 3.x needs Python 3.10+, and its scripts run under this skill's interpreter, so on Python 3.9 a 3.x checkout is refused with `FFMPEG_SKILL_NOT_FOUND` ("needs Python 3.10 or later") and `doctor` reports it `INCOMPATIBLE` with the fix. This skill itself keeps Python 3.9 with an ffmpeg-skill 2.x checkout.
 - CI: the integration job runs against ffmpeg-skill `v2.24.1` and `v3.0.0` (tags, not `main`).

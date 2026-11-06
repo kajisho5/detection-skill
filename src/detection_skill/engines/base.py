@@ -34,13 +34,14 @@ class EngineResult:
     boxes in the frame image's own pixels, in any order."""
     frames: List[Dict[str, Any]]
     runtime: Dict[str, Any] = field(default_factory=dict)
+    data: Dict[str, Any] = field(default_factory=dict)  # a shot engine's result (boundaries, per-frame scores)
 
     def to_dict(self) -> Dict[str, Any]:
-        return {"frames": self.frames, "runtime": dict(self.runtime)}
+        return {"frames": self.frames, "runtime": dict(self.runtime), "data": dict(self.data)}
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "EngineResult":
-        return cls(frames=list(d["frames"]), runtime=dict(d.get("runtime") or {}))
+        return cls(frames=list(d["frames"]), runtime=dict(d.get("runtime") or {}), data=dict(d.get("data") or {}))
 
 
 @dataclass
@@ -61,7 +62,7 @@ class Prepared:
 class DetectionEngine:
     """Subclass and register in `engines/__init__.py`."""
     id = "base"
-    kind = "face"            # face | text | object
+    kind = "face"            # face | text | object | shot
     description = ""
     runtime = ""
     license = ""             # licence of the engine code
