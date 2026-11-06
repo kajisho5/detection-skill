@@ -1,4 +1,4 @@
-# Detections (`detection-skill/detections@1`), tracks (`detection-skill/tracks@1`), shots (`detection-skill/shots@1`), reframe (`detection-skill/reframe@1`) and speakers (`detection-skill/speakers@1`)
+# Detections (`detection-skill/detections@1`), tracks (`detection-skill/tracks@1`), shots (`detection-skill/shots@1`), reframe (`detection-skill/reframe@1`), speakers (`detection-skill/speakers@1`) and personal data (`detection-skill/pii@1`)
 
 JSON Schemas: `schemas/detections.schema.json`, `schemas/tracks.schema.json`, `schemas/shots.schema.json`, `schemas/reframe.schema.json`. The validators in `src/detection_skill/detections.py`, `tracks.py`, `shots.py` and `reframe.py` are the executable form; `detection check <file>` runs the right one by the document's `schema`.
 
@@ -127,4 +127,24 @@ Rules the validator checks: frames in time order inside the duration; boxes insi
 | `ranges` | `[{start, end, camera, track, speaker, quality, reason}]`, contiguous from 0 to camera 0's duration |
 | `switch` | the ranges as `START-END:CAM,...` for `multicam --switch` |
 | `counts` | `cameras`, `ranges`, `switches`, `matches` |
+
+## Personal data (patterns; every region a proposal)
+
+`detection pii text.json [--faces faces.json] [--locale intl,ja-JP] -o pii.json` lists personal and patient data in OCR text, and faces when given, as redact-ready rectangles to confirm (ADR-006). It removes nothing.
+
+- **Categories.** `name`, `patient_id`, `date_of_birth`, `phone`, `address` from the OCR lines; `face` from `--faces`.
+- **Locales.** `intl` (default: English keywords, ISO / day-month-year / month-name dates after a birth keyword, E.164 phones). Opt-in: `en-US` (NANP phones, SSN, street + ZIP), `en-GB` (NHS number, UK phones, postcodes), `ja-JP` (患者ID / カルテ番号, 生年月日 in 和暦 or 西暦, 電話, 〒 / 住所, 氏名 / 様). `detection contract --json` lists every rule (`pii.locales`).
+- **Keyword first.** A value counts only next to its keyword (a phone number also by its format); a bare date or name is not found.
+- **Regions.** The whole OCR line's box, padded (`--pad`, 0.1 per side), even pixels. The value is not copied: `excerpt` masks it (`DOB: ####-##-##`).
+
+| field | meaning |
+|---|---|
+| `schema` | `detection-skill/pii@1` |
+| `source` | copied from the text detections |
+| `inputs` | `text`, `faces`: `file`, `fingerprint`, `tool`, `kind`, `frames`, `detections`, `lang`, `level` |
+| `method` | `name: patterns`, `heuristic: true`, `identity: false`, `note` |
+| `parameters` | `locales`, `pad`, `categories`, `rules` (the rule ids in use) |
+| `regions` | `[{id, t, category, box, rules, excerpt, reason, source, score, decision: CONFIRM, redact {x, y, width, height}}]` |
+| `redact` | `[{category, regions, start, end, x, y, width, height, decision: CONFIRM, reason}]`: overlapping regions of one category at consecutive sample times as one span (`start`/`end` null for an image) |
+| `counts` | `regions`, `redact`, `by_category`, `confirm` |
 

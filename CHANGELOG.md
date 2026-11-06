@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `detection pii` (roadmap step 11, ADR-006): text detections (+ face detections with `--faces`) -> `detection-skill/pii@1` (`schemas/pii.schema.json`): names, patient ids, dates of birth, phone numbers and addresses found by keyword and format patterns per locale (`intl` by default; `en-US`, `en-GB`, `ja-JP` opt-in, every rule listed in the contract), and faces, each as the line's (face's) box padded to an even-pixel redact rectangle with its rule and reason; joined into redact spans over time. Every region is `CONFIRM`; nothing is removed, the value is masked in `excerpt`. The contract adds `vision.find_personal_data` (EXPERIMENTAL); `doctor` adds `ready.pii`.
+
 - `detection faces --attributes` (ADR-005): each face also gets measured `attributes`: `size` (box height / frame height), `yaw_deg`, `roll_deg`, `frontal` (from the five landmarks), `sharpness` (Laplacian variance at 96x96) and `mouth_contrast`. Heuristics, off by default; `detection tracks` keeps them per box, and the validators check their ranges.
 - `detection speakers` (roadmap step 10, ADR-005): face tracks from two or more cameras (+ diarization-skill turns with `--turns`) -> `detection-skill/speakers@1` (`schemas/speakers.schema.json`): per time range on camera 0's timeline the speaking face (mouth motion, or turns matched to faces), the camera with its best view (size, frontal angle, sharpness) and the reason, and `switch`, the ranges as ffmpeg-skill `multicam --switch`. `--offsets` takes multicam's `offsets_seconds`. The contract adds `vision.active_speaker` (EXPERIMENTAL); `doctor` adds `ready.speakers`. Measured on a two-camera fixture with alternating speakers: with turns the switch list is the turns; with mouth motion alone every switch is within 0.12 s.
 

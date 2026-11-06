@@ -55,6 +55,7 @@ from detection_skill.service import detect, run_engine, run_process_group  # noq
 from detection_skill.tracks import TRACKS_SCHEMA, make_tracks, redact_rect, validate_tracks  # noqa: E402
 from detection_skill.shots import SHOTS_SCHEMA, detect_shots, validate_shots  # noqa: E402
 from detection_skill.reframe import REFRAME_SCHEMA, make_reframe, parse_aspect, validate_reframe, window_size  # noqa: E402
+from detection_skill.pii import PII_SCHEMA, find, make_pii, parse_locales, validate_pii  # noqa: E402
 from detection_skill.speakers import SPEAKERS_SCHEMA, make_speakers, switch_list, validate_speakers  # noqa: E402
 from detection_skill.engines.faceattrs import pose  # noqa: E402
 from detection_skill.engines.shotcore import (blend_runs, merge_boundaries, transnet_boundaries,  # noqa: E402
@@ -177,9 +178,9 @@ class DetectionsTests(TmpCase):
         tracks = json.loads((ROOT / "schemas" / "tracks.schema.json").read_text(encoding="utf-8"))
         self.assertEqual(tracks["properties"]["schema"]["const"], TRACKS_SCHEMA)
         from detection_skill import reframe as rf_mod, shots as shots_mod
-        from detection_skill import speakers as sp_mod
+        from detection_skill import pii as pii_mod, speakers as sp_mod
         for name, const, required in (("shots", SHOTS_SCHEMA, shots_mod.REQUIRED), ("reframe", REFRAME_SCHEMA, rf_mod.REQUIRED),
-                                      ("speakers", SPEAKERS_SCHEMA, sp_mod.REQUIRED)):
+                                      ("speakers", SPEAKERS_SCHEMA, sp_mod.REQUIRED), ("pii", PII_SCHEMA, pii_mod.REQUIRED)):
             sch = json.loads((ROOT / "schemas" / f"{name}.schema.json").read_text(encoding="utf-8"))
             self.assertEqual(sch["properties"]["schema"]["const"], const)
             self.assertEqual(set(sch["required"]), set(required))
@@ -963,6 +964,141 @@ class SpeakersTests(TmpCase):
         self.assertEqual((rc, out["error"]["code"]), (2, "OUTPUT_IS_INPUT"))
 
 
+# ---- personal and patient data ----------------------------------------------------------------------
+def slide_lines(lines, h=720):
+    """A text engine reading these lines off a 1280x720 slide, one per 100 px."""
+    def boxes(t, w, hh):
+        return [{"box": [80.0, 80.0 + 100 * i, 30.0 * len(s) * w / 1280.0 + 10, 40.0], "score": 0.9, "label": s, "lang": "eng"}
+                for i, s in enumerate(lines)]
+    return boxes
+
+
+class PiiTests(TmpCase):
+    def text_doc(self, lines, video=False, **kw):
+        if video:
+            media = fake_video(self.tmp, name=kw.pop("name", "talk.mp4"), duration=4.0, width=1280, height=720)
+            return detect("text", media, every=1.0, engine=ScriptedEngine("text", slide_lines(lines)), ffmpeg_skill=FAKE_FFMPEG_SKILL,
+                          lang="eng", **kw)
+        img = os.path.join(self.tmp, kw.pop("name", "slide.png"))
+        write_png(img, 1280, 720, (255, 255, 255))
+        return detect("text", img, engine=ScriptedEngine("text", slide_lines(lines)), lang="eng", **kw)
+
+    def test_patterns_per_locale(self):
+        cases = [
+            ("intl", "Patient ID: MRN 00482913", ["patient_id"]),
+            ("intl", "DOB: 1956-03-14", ["date_of_birth"]),
+            ("intl", "Date of birth 14 March 1956", ["date_of_birth"]),
+            ("intl", "born on Mar 3, 1956", ["date_of_birth"]),
+            ("intl", "Tel: +44 20 7946 0958", ["phone"]),
+            ("intl", "Patient: John Smith", ["name"]),
+            ("intl", "Mrs. Jane Doe, 71", ["name"]),
+            ("intl", "Address: 12 Baker Street, London", ["address"]),
+            ("intl", "Published 2024-05-01", []),
+            ("intl", "Sensitivity 92% (n = 1203), 95% CI 1.2-3.4", []),
+            ("intl", "Case 3: 64-year-old man", []),
+            ("intl", "Call (555) 123-4567", []),          # NANP format only with en-US
+            ("en-US", "Call (555) 123-4567", ["phone"]),
+            ("en-US", "SSN: 123-45-6789", ["patient_id"]),
+            ("en-US", "1600 Pennsylvania Avenue NW, Washington, DC 20500", ["address"]),
+            ("en-GB", "NHS No: 943 476 5919", ["patient_id"]),
+            ("en-GB", "SW1A 1AA", ["address"]),
+            ("ja-JP", "患者ID: 0012345", ["patient_id"]),
+            ("ja-JP", "生年月日: 昭和45年3月14日", ["date_of_birth"]),
+            ("ja-JP", "生年月日 1970/03/14", ["date_of_birth"]),
+            ("ja-JP", "電話 03-1234-5678", ["phone"]),
+            ("ja-JP", "〒100-0005 東京都千代田区丸の内", ["address"]),
+            ("ja-JP", "山田 太郎 様", ["name"]),
+            ("ja-JP", "2024年5月1日 発表", []),
+            ("intl", "患者ID: 0012345", []),              # the Japanese profile is opt-in
+        ]
+        for loc, text, want in cases:
+            self.assertEqual(sorted({h["category"] for h in find(text, [loc])}), want, (loc, text))
+        h = find("DOB: 1956-03-14", ["intl"])[0]
+        self.assertEqual(h["excerpt"], "DOB: ####-##-##")
+        self.assertNotIn("1956", h["excerpt"])
+        self.assertEqual(parse_locales(None), ["intl"])
+        self.assertEqual(parse_locales(["intl,ja-JP", "ja-JP"]), ["intl", "ja-JP"])
+        with self.assertRaises(DetectionError):
+            parse_locales(["xx-YY"])
+
+    def test_slide_with_patient_id_and_birth_date_gives_both_regions(self):
+        doc = make_pii(self.text_doc(["Case presentation", "Patient ID: MRN 00482913", "DOB: 1956-03-14", "Chief complaint: chest pain"]))
+        rep = validate_pii(doc)
+        self.assertTrue(rep.ok, rep.errors)
+        self.assertEqual(doc["schema"], PII_SCHEMA)
+        self.assertEqual([r["category"] for r in doc["regions"]], ["patient_id", "date_of_birth"])
+        self.assertEqual([r["box"][1] for r in doc["regions"]], [180.0, 280.0])  # the two lines
+        for r in doc["regions"]:
+            self.assertEqual(r["decision"], "CONFIRM")
+            self.assertTrue(r["reason"])
+            x = r["redact"]
+            self.assertTrue(x["x"] <= r["box"][0] and x["x"] + x["width"] >= r["box"][0] + r["box"][2])
+            self.assertEqual((x["width"] % 2, x["height"] % 2), (0, 0))
+            self.assertNotIn("00482913", json.dumps(r))
+        self.assertEqual([(s["start"], s["end"]) for s in doc["redact"]], [(None, None)] * 2)
+        self.assertEqual(doc["counts"]["confirm"], 2)
+        self.assertEqual(doc["parameters"]["locales"], ["intl"])
+
+    def test_slide_with_none_gives_none(self):
+        doc = make_pii(self.text_doc(["Results", "Sensitivity 92% (n = 1203)", "Published 2024-05-01", "Follow-up: 12 months"]))
+        self.assertTrue(validate_pii(doc).ok)
+        self.assertEqual((doc["regions"], doc["redact"]), ([], []))
+        self.assertTrue(any("pattern check" in w for w in doc["warnings"]))
+
+    def test_video_spans_faces_and_locale(self):
+        doc = make_pii(self.text_doc(["患者ID: 0012345", "Summary"], video=True), locales=["ja-JP"])
+        self.assertTrue(validate_pii(doc).ok, validate_pii(doc).errors)
+        self.assertEqual(len(doc["regions"]), 4)  # one line at each of 4 sample times
+        self.assertEqual([(s["start"], s["end"], len(s["regions"])) for s in doc["redact"]], [(0.0, 4.0, 4)])
+        text = self.text_doc(["Summary"], video=True, name="talk.mp4")
+        media = fake_video(self.tmp, name="talk.mp4", duration=4.0, width=1280, height=720)
+        faces = detect("face", media, every=1.0, engine=ScriptedEngine("face", lambda t, w, h: [{"box": [900.0, 100.0, 120.0, 150.0],
+                                                                                                    "score": 0.9}]),
+                       ffmpeg_skill=FAKE_FFMPEG_SKILL)
+        doc = make_pii(text, faces=faces)
+        self.assertEqual({r["category"] for r in doc["regions"]}, {"face"})
+        self.assertTrue(all(r["decision"] == "CONFIRM" for r in doc["regions"]))
+        self.assertEqual(doc["inputs"]["faces"]["kind"], "face")
+        other = fake_video(self.tmp, name="other.mp4", duration=4.0, width=1280, height=720, fps=24.0)
+        faces2 = detect("face", other, every=1.0, engine=ScriptedEngine("face"), ffmpeg_skill=FAKE_FFMPEG_SKILL)
+        with self.assertRaises(DetectionError) as cm:
+            make_pii(text, faces=faces2)
+        self.assertEqual(cm.exception.code, "INVALID_ARGUMENT")
+        with self.assertRaises(DetectionError) as cm:
+            make_pii(faces)
+        self.assertEqual(cm.exception.code, "INVALID_ARGUMENT")
+
+    def test_validator_rejects_silent_removal(self):
+        base = make_pii(self.text_doc(["Patient ID: MRN 00482913", "DOB: 1956-03-14"]))
+        cases = {
+            "decision": lambda d: d["regions"][0].__setitem__("decision", "REMOVED"),
+            "dropped": lambda d: d["redact"].pop(),
+            "reason": lambda d: d["regions"][0].__setitem__("reason", ""),
+            "odd": lambda d: d["regions"][0]["redact"].__setitem__("width", 3),
+            "category": lambda d: d["regions"][0].__setitem__("category", "secret"),
+            "counts": lambda d: d["counts"].__setitem__("regions", 5),
+            "locale": lambda d: d["parameters"].__setitem__("locales", ["xx"]),
+        }
+        for name, mutate in cases.items():
+            d = copy.deepcopy(base)
+            mutate(d)
+            self.assertFalse(validate_pii(d).ok, name)
+
+    def test_cli_pii_and_check(self):
+        tp = os.path.join(self.tmp, "text.json")
+        Path(tp).write_text(json.dumps(self.text_doc(["Patient ID: MRN 00482913", "DOB: 1956-03-14"])), encoding="utf-8")
+        out_p = os.path.join(self.tmp, "pii.json")
+        rc, out = run_cli("pii", tp, "-o", out_p, "--json")
+        self.assertEqual((rc, out["counts"]["regions"]), (0, 2), out)
+        self.assertEqual(out["inputs"]["text"]["file"], "text.json")
+        rc, out = run_cli("check", out_p, "--json")
+        self.assertEqual((rc, out["schema"], out["ok"]), (0, PII_SCHEMA, True))
+        rc, out = run_cli("pii", tp, "--locale", "xx", "-o", os.path.join(self.tmp, "p2.json"), "--json")
+        self.assertEqual((rc, out["error"]["code"]), (2, "INVALID_ARGUMENT"))
+        rc, out = run_cli("pii", tp, "-o", tp, "--overwrite", "--json")
+        self.assertEqual((rc, out["error"]["code"]), (2, "OUTPUT_IS_INPUT"))
+
+
 # ---- small pieces ---------------------------------------------------------------------------------
 class PieceTests(unittest.TestCase):
     def test_boxes(self):
@@ -1056,7 +1192,8 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(c["version"], __version__)
         self.assertEqual({p["id"] for p in c["provides"]},
                          {"vision.detect_faces", "vision.detect_text", "vision.detect_objects", "vision.track_boxes",
-                          "vision.detect_shots", "vision.reframe_path", "vision.active_speaker"})
+                          "vision.detect_shots", "vision.reframe_path", "vision.active_speaker",
+                          "vision.find_personal_data"})
         tool_ids = {t["tool_id"] for t in TOOLS}
         for p in c["provides"]:
             self.assertEqual(set(p), {"id", "lifecycle", "tool_id"})
@@ -1366,6 +1503,51 @@ class RealReframeTests(TmpCase):
             self.assertEqual([s["shot"] for s in doc["switches"]], [0, 1])
             self.assertEqual(ws[0]["shot"], 0)
             self.assertEqual(ws[-1]["shot"], 1)
+
+
+@unittest.skipUnless(HAVE_TESS, "needs tesseract with jpn, jpn_vert and eng traineddata")
+@unittest.skipUnless(HAVE_PIL and JP_FONT, "needs Pillow and a Japanese font (DETECTION_TEST_FONT) to render the fixture")
+class RealPiiTests(TmpCase):
+    # Slides rendered with Pillow (1280x720, 40 px), read by Tesseract, checked by `pii`. Ground truth from the
+    # construction: the line index of each personal datum.
+    WITH = ["Case presentation", "Patient ID: MRN 00482913", "DOB: 1956-03-14", "Chief complaint: chest pain"]
+    NONE = ["Results", "Sensitivity 92% (n = 1203)", "Published 2024-05-01", "Follow-up: 12 months"]
+    JA = ["症例提示", "患者ID: 0012345", "生年月日: 昭和45年3月14日", "主訴: 胸痛"]
+
+    def slide(self, lines, name):
+        from PIL import Image, ImageDraw, ImageFont
+        font = ImageFont.truetype(JP_FONT, 40)
+        im = Image.new("RGB", (1280, 720), "white")
+        dr = ImageDraw.Draw(im)
+        for i, line in enumerate(lines):
+            dr.text((80, 80 + i * 100), line, font=font, fill="black")
+        path = os.path.join(self.tmp, name)
+        im.save(path)
+        return path
+
+    def run_pii(self, lines, name, lang, locales):
+        text = detect("text", self.slide(lines, name), lang=lang, tessdata_dir=os.environ.get("DETECTION_TESSDATA_DIR"))
+        doc = make_pii(text, locales=locales)
+        self.assertTrue(validate_pii(doc).ok, validate_pii(doc).errors)
+        print(f"\n  pii {name} ({'+'.join(locales)}): OCR {[d['label'] for d in text['frames'][0]['detections']]} -> "
+              f"{[(r['category'], r['excerpt']) for r in doc['regions']]}", end="")
+        return doc
+
+    def assert_lines(self, doc, want):
+        got = [(r["category"], int(round((r["box"][1] + r["box"][3] / 2 - 80) / 100.0))) for r in doc["regions"]]
+        self.assertEqual(got, want)
+        for r in doc["regions"]:
+            x = r["redact"]
+            self.assertTrue(x["x"] <= r["box"][0] and x["y"] <= r["box"][1] and x["x"] + x["width"] >= r["box"][0] + r["box"][2]
+                            and x["y"] + x["height"] >= r["box"][1] + r["box"][3])
+            self.assertEqual(r["decision"], "CONFIRM")
+
+    def test_slide_with_patient_id_and_birth_date_and_slide_with_none(self):
+        self.assert_lines(self.run_pii(self.WITH, "with.png", "eng", ["intl"]), [("patient_id", 1), ("date_of_birth", 2)])
+        self.assert_lines(self.run_pii(self.NONE, "none.png", "eng", ["intl"]), [])
+
+    def test_japanese_profile(self):
+        self.assert_lines(self.run_pii(self.JA, "ja.png", "jpn+eng", ["ja-JP"]), [("patient_id", 1), ("date_of_birth", 2)])
 
 
 

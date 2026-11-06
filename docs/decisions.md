@@ -177,3 +177,25 @@ A panel or an interview shot with two or more cameras is cut between them by who
 - Without turns a switch lands up to about half a window from the true change (activity is measured over a centred window).
 - Measured on the CI fixture (two cameras, 640x360, 12 s: a wide shot of two faces and a close-up of one; alternating speakers every 3 s, mouths drawn opening and closing with lavfi drawbox; YuNet sampled every 0.12 s): with turns the switch list is exactly the turns; with mouth motion alone every switch is within 0.12 s of the truth, and the close-up is chosen for the speaker it shows. Synthetic, not real footage; real panels (small faces, beards, masks, side angles) are unmeasured. The turns in that test are written from the fixture's construction in diarization-skill's `turns@1` shape, not produced by diarization-skill.
 
+## ADR-006 Personal and patient data in slides and frames (`detection pii`)
+
+Roadmap step 11.
+
+### Context
+
+Medical and scientific talks show case slides; a patient id, a date of birth or a face in a clinical photo left on a slide must not be published. Finding them is measurement; deciding is a person's job, and removing them is ffmpeg-skill `redact`'s. The roadmap asks for patterns stated per locale and for every region to be a proposal, none removed silently.
+
+### Decision
+
+- **`detection pii <text-detections.json> [--faces face-detections.json] [--locale intl,...] -o pii.json`** writes `detection-skill/pii@1` (`schemas/pii.schema.json`): per OCR line that matches, one region with the category (`name`, `patient_id`, `date_of_birth`, `phone`, `address`; `face` for each face given with `--faces`), the rule ids, the reason, an `excerpt` (the keyword with the value masked: `DOB: ####-##-##`, the value itself is never copied), and a redact rectangle (the line's box, padded 0.1 per side, even pixels). `redact[]` joins regions of one category that overlap at consecutive sample times into spans (`start`, `end`; null for an image) in ffmpeg-skill `redact`'s `--x --y --width --height` convention.
+- **Every region is a proposal.** `decision` is always `CONFIRM`; the validator rejects any other value and any region missing from `redact[]`. Nothing is removed by this skill; the agent asks a person, then runs `redact` on the confirmed spans.
+- **Patterns per locale, international by default.** `intl` (default): English keywords (Patient ID / MRN / medical record / hospital number / case no., DOB / date of birth / born, Name / Patient, Mr / Mrs / Ms, Address, Tel / Phone) with ISO 8601, day-month-year, month-day-year and month-name dates, and E.164 phone numbers. Opt-in regional profiles: `en-US` (NANP phone formats, SSN, street addresses with ZIP), `en-GB` (NHS number, UK phones, postcodes), `ja-JP` (患者ID / 患者番号 / カルテ番号 / 診察券番号, 生年月日 with 和暦 or 西暦, 電話, 〒 and 住所, 氏名 / 患者名, 様 / 殿). Every rule is listed with what it means in `detection contract --json` (`pii.locales`).
+- **Keyword first.** A date is a date of birth only after a birth keyword, a number a patient id only after an id keyword, a name only after a name keyword or an honorific; bare dates, years, percentages and statistics are left alone, so a results slide gives no region.
+- **The whole line.** The region is the OCR line box, not a guessed sub-box of the matched characters: over-covering is the safe side for redaction. Line-level OCR (`detection text`'s default) is required for a keyword and its value to be seen together; word level gets a warning.
+
+### Consequences
+
+- A pattern check, not named-entity recognition: a bare name, a date of birth without its keyword, a handwritten or stylised label, or an OCR misread is not found. Every document says so (`method.note`), and an empty result carries a warning to review the slides anyway.
+- Faces are all proposed when `--faces` is given; the skill cannot tell a clinical photo from the speaker, so the person confirming decides.
+- Measured on rendered slides read by Tesseract (CI): a slide with `Patient ID: MRN 00482913` and `DOB: 1956-03-14` gives exactly those two regions (intl); a results slide with a publication date and statistics gives none; the Japanese slide (患者ID, 生年月日 in 和暦) gives both with `--locale ja-JP`. Synthetic slides; real case slides (photos of charts, scanned forms, small print) are unmeasured.
+
