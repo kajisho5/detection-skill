@@ -1,4 +1,4 @@
-# Detections (`detection-skill/detections@1`), tracks (`detection-skill/tracks@1`), shots (`detection-skill/shots@1`) and reframe (`detection-skill/reframe@1`)
+# Detections (`detection-skill/detections@1`), tracks (`detection-skill/tracks@1`), shots (`detection-skill/shots@1`), reframe (`detection-skill/reframe@1`) and speakers (`detection-skill/speakers@1`)
 
 JSON Schemas: `schemas/detections.schema.json`, `schemas/tracks.schema.json`, `schemas/shots.schema.json`, `schemas/reframe.schema.json`. The validators in `src/detection_skill/detections.py`, `tracks.py`, `shots.py` and `reframe.py` are the executable form; `detection check <file>` runs the right one by the document's `schema`.
 
@@ -32,6 +32,7 @@ A detection:
 | `lang` | text only: the Tesseract languages used (`jpn+eng`, `jpn_vert+eng`, ...) |
 | `words` | text only: number of words in the line |
 | `landmarks` | face only: five points (right eye, left eye, nose tip, right and left mouth corner) in source pixels |
+| `attributes` | face only, with `faces --attributes` (ADR-005): `size` (box height / frame height), `yaw_deg`, `roll_deg`, `frontal` (cos yaw; from the landmarks), `sharpness` (Laplacian variance of the face at 96x96), `mouth_contrast` (gray-level spread around the mouth corners / 128); each null when it could not be measured. Heuristics |
 | `engine`, `model`, `model_sha256` | provenance on every box, equal to the document's `engine` |
 
 For OCR, `model_sha256` is the sha256 over the sorted `file=sha256` lines of the traineddata files used; each file's own sha256 is in `engine.files`, with `variant: tessdata_best` when it matches the skill's table and `unknown (...)` otherwise.
@@ -104,3 +105,26 @@ Rules the validator checks: frames in time order inside the duration; boxes insi
 | `switches` | `[{t, shot, from, to, reason}]` |
 | `shots` | `[{index, start, end, subject, x, y, width, height, subject_inside_fraction}]` |
 | `counts` | `windows`, `switches`, `shots`, `subject_outside` |
+
+## Speakers (a heuristic)
+
+`detection speakers --camera cam0-face-tracks.json --camera cam1-face-tracks.json [--offsets 0,S] [--turns turns.json] -o speakers.json` gives, per time range on camera 0's timeline, the speaking face and the camera that shows it best, as a switch list for ffmpeg-skill `multicam --switch` (ADR-005). It cuts nothing.
+
+- **Input.** One face tracks document per camera from `faces --every 0.12 --attributes` -> `tracks`, in multicam's input order (camera 0 is the reference). `--offsets` is multicam's `offsets_seconds` (reference time = camera time + offset).
+- **Mouth motion.** A face's activity is the spread of its `mouth_contrast` over `--window` seconds (0.6). Without `--turns`, the faces with activity >= `--min-activity` (0.02) and at least half the highest are speaking; the one with the best view quality (size, frontal angle, sharpness) is shown. Nobody speaking: the camera holds.
+- **Turns.** With diarization-skill turns, each anonymous speaker is matched per camera to the face whose mouth moves most during their turns (`matches`), and each turn goes to the best camera showing that face, switching at the turn's start.
+- **Shortest shot.** Ranges shorter than `--min-shot` (1.0 s) are folded into the one before.
+
+| field | meaning |
+|---|---|
+| `schema` | `detection-skill/speakers@1` |
+| `source` | camera 0's source |
+| `cameras` | `[{index, file, fingerprint, source {filename, fingerprint, duration}, offset, tracks, sampling_step, attributes}]` |
+| `turns` | `{file, fingerprint, tool, offset, speakers, turns}` or null |
+| `method` | `name: mouth-motion` or `turns+mouth-motion`, `heuristic: true`, `identity: false`, `note` |
+| `parameters` | `window`, `min_activity`, `min_shot`, `step` (the grid, the finest sampling step), `share` (0.5) |
+| `matches` | with turns: `[{speaker, camera, track, score, activity_in_turns, activity_elsewhere}]` |
+| `ranges` | `[{start, end, camera, track, speaker, quality, reason}]`, contiguous from 0 to camera 0's duration |
+| `switch` | the ranges as `START-END:CAM,...` for `multicam --switch` |
+| `counts` | `cameras`, `ranges`, `switches`, `matches` |
+

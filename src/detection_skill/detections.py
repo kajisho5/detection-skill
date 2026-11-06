@@ -18,6 +18,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 from .engines.boxes import clip
+from .engines.faceattrs import ATTRIBUTE_KEYS
 
 DETECTIONS_SCHEMA = "detection-skill/detections@1"
 KINDS = ("face", "text", "object")
@@ -84,6 +85,9 @@ def build_detection(raw: Dict[str, Any], *, kind: str, t: Optional[float], sx: f
     if kind == "face" and isinstance(raw.get("landmarks"), list):
         det["landmarks"] = [[round(min(max(p[0] * sx, 0.0), width), 1), round(min(max(p[1] * sy, 0.0), height), 1)]
                             for p in raw["landmarks"] if isinstance(p, (list, tuple)) and len(p) == 2]
+    if kind == "face" and isinstance(raw.get("attributes"), dict):
+        det["attributes"] = {k: (round(float(raw["attributes"][k]), 4) if _num(raw["attributes"].get(k)) else None)
+                             for k in ATTRIBUTE_KEYS if k in raw["attributes"]}
     return det
 
 
@@ -306,12 +310,32 @@ def _check_det(d: Any, w: str, kind: str, t: Any, width: Optional[int], height: 
         bad = sorted(IDENTITY_KEYS & set(d))
         if bad:
             rep.errors.append(f"{w}: identity keys are not allowed on a face: {bad}")
+        if "attributes" in d:
+            for e in check_attributes(d["attributes"]):
+                rep.errors.append(f"{w}.attributes: {e}")
     elif not isinstance(d["label"], str) or not d["label"]:
         rep.errors.append(f"{w}: label must be a non-empty string ({'OCR text' if kind == 'text' else 'object class'})")
     if kind == "text" and (not isinstance(d.get("lang"), str) or not d["lang"]):
         rep.errors.append(f"{w}: lang is required on text")
     if d["engine"] != eng.get("id") or d["model"] != eng.get("model") or d["model_sha256"] != eng.get("model_sha256"):
         rep.errors.append(f"{w}: engine/model/model_sha256 must equal the document's engine")
+
+
+ATTRIBUTE_RANGES = {"size": (0.0, 1.0), "yaw_deg": (-90.0, 90.0), "roll_deg": (-180.0, 180.0), "frontal": (0.0, 1.0),
+                    "sharpness": (0.0, math.inf), "mouth_contrast": (0.0, 1.0)}
+
+
+def check_attributes(a: Any) -> List[str]:
+    """Errors in a face's measured attributes (each a number in its range, or null when it could not be measured)."""
+    if not isinstance(a, dict):
+        return ["must be an object"]
+    errs = []
+    for k, v in a.items():
+        if k not in ATTRIBUTE_RANGES:
+            errs.append(f"unknown attribute {k!r}")
+        elif v is not None and (not _num(v) or not ATTRIBUTE_RANGES[k][0] <= v <= ATTRIBUTE_RANGES[k][1]):
+            errs.append(f"{k} must be a number in [{ATTRIBUTE_RANGES[k][0]:g}, {ATTRIBUTE_RANGES[k][1]:g}] or null")
+    return errs
 
 
 def _check_run_fields(doc: Dict[str, Any], rep: ValidationReport, tool: str) -> None:

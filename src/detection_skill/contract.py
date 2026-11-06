@@ -13,6 +13,7 @@ from .models import ENV_MODELS_DIR, ENV_TESSDATA_DIR, FACE_MODEL_DEFAULT, KNOWN_
 from .reframe import METHOD as REFRAME_METHOD, REFRAME_SCHEMA
 from .service import DEFAULT_EVERY, DEFAULT_MAX_FRAMES, DEFAULT_MIN_SCORE, DEFAULT_TIMEOUT
 from .shots import DEFAULT_MAX_FRAMES_SHOTS, SHOT_WIDTH, SHOTS_SCHEMA
+from .speakers import DEFAULTS as SPEAKER_DEFAULTS, METHODS as SPEAKER_METHODS, SPEAKERS_SCHEMA, TURNS_SCHEMA
 from .tracks import METHOD, TRACKS_SCHEMA
 
 SKILL_ID = "detection"
@@ -24,8 +25,9 @@ _COMMON = ["[--min-score X]", "[--ffmpeg-skill <dir>]", f"[--timeout {DEFAULT_TI
 TOOLS: List[Dict[str, Any]] = [
     {"tool_id": "detection/faces", "role": "measurement", "writes_media": False, "mutates_input": False, "deterministic": True,
      "description": "Face boxes (YuNet) at sampled times of a video, or in an image: time, box in pixels and normalized, "
-                    "score, five landmarks, engine, model and model sha256. A face box is never an identity",
-     "argv": ["faces", "<video|image>"] + _SAMPLING + ["[--models-dir <dir>]", "[--model <file.onnx>]"] + _COMMON},
+                    "score, five landmarks, engine, model and model sha256; with --attributes also each face's measured "
+                    "size, pose (yaw, roll, frontal), sharpness and mouth contrast (heuristics). A face box is never an identity",
+     "argv": ["faces", "<video|image>"] + _SAMPLING + ["[--models-dir <dir>]", "[--model <file.onnx>]", "[--attributes]"] + _COMMON},
     {"tool_id": "detection/text", "role": "measurement", "writes_media": False, "mutates_input": False, "deterministic": True,
      "description": "Text lines (Tesseract, ja/en, vertical Japanese with jpn_vert) with their boxes and OCR text, from a "
                     "video's sampled frames or an image (a slide, a screenshot)",
@@ -54,10 +56,19 @@ TOOLS: List[Dict[str, Any]] = [
      "argv": ["reframe", "<face-tracks.json>", "-o <reframe.json>", "[--aspect 9:16]", "[--shots <shots.json>]",
               "[--objects <object-tracks.json>]", "[--object-classes person]", "[--dead-zone 0.1]", "[--max-speed 0.6]",
               "[--overwrite]", "--json"]},
+    {"tool_id": "detection/speakers", "role": "transformation", "writes_media": False, "mutates_input": False, "deterministic": True,
+     "description": "Active speaker for multicam switching: from each camera's face tracks (faces --attributes) and, when given, "
+                    "diarization-skill turns, which face speaks in each time range (mouth motion, or turns matched to faces) and "
+                    "which camera shows it best (size, frontal angle, sharpness), as a switch list for ffmpeg-skill multicam "
+                    "--switch. A documented heuristic; it cuts nothing",
+     "argv": ["speakers", "--camera <cam0-face-tracks.json>", "--camera <cam1-face-tracks.json>", "-o <speakers.json>",
+              "[--offsets 0,S,...]", "[--turns <turns.json>]", "[--turns-offset 0]", f"[--window {SPEAKER_DEFAULTS['window']:g}]",
+              f"[--min-activity {SPEAKER_DEFAULTS['min_activity']:g}]", f"[--min-shot {SPEAKER_DEFAULTS['min_shot']:g}]",
+              "[--overwrite]", "--json"]},
     {"tool_id": "detection/check", "role": "validation", "writes_media": False, "mutates_input": False, "deterministic": True,
-     "description": f"Validate a detections ({DETECTIONS_SCHEMA}), tracks ({TRACKS_SCHEMA}), shots ({SHOTS_SCHEMA}) or reframe "
-                    f"({REFRAME_SCHEMA}) document",
-     "argv": ["check", "<det.json|tracks.json|shots.json|reframe.json>", "--json"]},
+     "description": f"Validate a detections ({DETECTIONS_SCHEMA}), tracks ({TRACKS_SCHEMA}), shots ({SHOTS_SCHEMA}), reframe "
+                    f"({REFRAME_SCHEMA}) or speakers ({SPEAKERS_SCHEMA}) document",
+     "argv": ["check", "<det.json|tracks.json|shots.json|reframe.json|speakers.json>", "--json"]},
 ]
 
 ERRORS = {
@@ -91,7 +102,8 @@ def contract() -> Dict[str, Any]:
                      {"id": "vision.detect_objects", "lifecycle": "EXPERIMENTAL", "tool_id": "detection/objects"},
                      {"id": "vision.track_boxes", "lifecycle": "EXPERIMENTAL", "tool_id": "detection/tracks"},
                      {"id": "vision.detect_shots", "lifecycle": "EXPERIMENTAL", "tool_id": "detection/shots"},
-                     {"id": "vision.reframe_path", "lifecycle": "EXPERIMENTAL", "tool_id": "detection/reframe"}],
+                     {"id": "vision.reframe_path", "lifecycle": "EXPERIMENTAL", "tool_id": "detection/reframe"},
+                     {"id": "vision.active_speaker", "lifecycle": "EXPERIMENTAL", "tool_id": "detection/speakers"}],
         "dependencies": [
             {"id": "ffmpeg-skill", "kind": "skill", "required": True, "version_range": VERSION_RANGE,
              "for": ["detection/faces", "detection/text", "detection/objects", "detection/shots"],
@@ -127,7 +139,9 @@ def contract() -> Dict[str, Any]:
                          "blurring or redacting (ffmpeg-skill redact, from the tracks rectangles)",
                          "downloading model files (a one-time manual step, see README)", "network access of any kind at run time",
                          "slide-change detection (slide-sync-skill)", "segmentation masks or pose", "OCR text correction",
-                         "cropping or applying a reframe path (video-editing-skill, ffmpeg-skill crop)"],
+                         "cropping or applying a reframe path (video-editing-skill, ffmpeg-skill crop)",
+                         "cutting between cameras or aligning them by audio (ffmpeg-skill multicam, from the speakers switch list)",
+                         "speaker diarization (diarization-skill turns, read when given)"],
         "tools": TOOLS,
         "detections": {"schema": DETECTIONS_SCHEMA, "schema_file": "schemas/detections.schema.json", "provenance": "OBSERVED",
                        "box": "[x, y, w, h] in source pixels, top-left origin; box_norm divided by frame_size",
@@ -141,6 +155,9 @@ def contract() -> Dict[str, Any]:
                   "boundary_kinds": ["cut", "gradual"], "engines": list(SHOT_ENGINES), "default_engine": DEFAULT_SHOT_ENGINE},
         "reframe": {"schema": REFRAME_SCHEMA, "schema_file": "schemas/reframe.schema.json", "method": REFRAME_METHOD,
                     "heuristic": True, "identity": False, "applies_crop": False},
+        "speakers": {"schema": SPEAKERS_SCHEMA, "schema_file": "schemas/speakers.schema.json", "methods": list(SPEAKER_METHODS),
+                     "heuristic": True, "identity": False, "cuts_media": False, "switch_format": "ffmpeg-skill multicam --switch",
+                     "timeline": "camera 0 (reference); reference time = camera time + offset (multicam offsets_seconds)"},
         "engines": {"default": dict(DEFAULT_ENGINE, shot=DEFAULT_SHOT_ENGINE), "registered": engine_ids(),
                     "known_model_sha256": {k: v["file"] for k, v in KNOWN_MODELS.items()},
                     "known_tessdata_sha256": {k: v["lang"] + " (" + v["variant"] + ")" for k, v in KNOWN_TESSDATA.items()}},

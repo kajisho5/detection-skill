@@ -22,8 +22,8 @@ import time
 from typing import Any, Dict, List, Optional
 
 from . import __version__
-from .detections import (ISO_RE, KINDS, ValidationReport, _check_run_fields, _num, check_source, scan_leakage, utc_now,
-                         validate_detections)
+from .detections import (ISO_RE, KINDS, ValidationReport, _check_run_fields, _num, check_attributes, check_source,
+                         scan_leakage, utc_now, validate_detections)
 from .engines.boxes import iou, union
 from .errors import DetectionError
 
@@ -98,6 +98,8 @@ def _entry(d: Dict[str, Any], t: float) -> Dict[str, Any]:
     e = {"t": t, "box": list(d["box"]), "score": d["score"]}
     if d.get("label") is not None:
         e["label"] = d["label"]
+    if isinstance(d.get("attributes"), dict):
+        e["attributes"] = dict(d["attributes"])  # faces --attributes: kept per box for speakers / frame choice
     return e
 
 
@@ -266,6 +268,9 @@ def validate_tracks(doc: Any) -> ValidationReport:
             if not (isinstance(box, list) and len(box) == 4 and all(_num(v) for v in box)) or box[2] <= 0 or box[3] <= 0 \
                     or box[0] < 0 or box[1] < 0 or box[0] + box[2] > width + 0.5 or box[1] + box[3] > height + 0.5:
                 rep.errors.append(f"{w}.boxes[{j}]: box must be [x, y, w, h] inside the frame")
+            if isinstance(b, dict) and "attributes" in b:
+                for e in check_attributes(b["attributes"]):
+                    rep.errors.append(f"{w}.boxes[{j}].attributes: {e}")
         if not isinstance(tr["redact"], list) or not tr["redact"]:
             rep.errors.append(f"{w}: redact must be a non-empty list")
             continue

@@ -67,7 +67,7 @@ def detect(kind: str, media: str, *, every: Optional[float] = None, at: Optional
            model: Optional[str] = None, lang: Optional[str] = None, vertical: bool = False, psm: Optional[int] = None,
            level: str = "line", classes: Optional[List[str]] = None, tessdata_dir: Optional[str] = None,
            ffmpeg_skill: Optional[str] = None, timeout: float = DEFAULT_TIMEOUT, engine: Optional[DetectionEngine] = None,
-           runner: Runner = subprocess_runner) -> Dict[str, Any]:
+           runner: Runner = subprocess_runner, attributes: bool = False) -> Dict[str, Any]:
     t0 = time.time()
     if kind not in DEFAULT_ENGINE:
         raise DetectionError("INVALID_ARGUMENT", f"kind must be one of {sorted(DEFAULT_ENGINE)}")
@@ -105,6 +105,11 @@ def detect(kind: str, media: str, *, every: Optional[float] = None, at: Optional
         parameters["classes"] = wanted or None
     elif classes or lang or vertical:
         raise DetectionError("INVALID_ARGUMENT", "--classes / --lang / --vertical do not apply to faces")
+    if attributes and kind != "face":
+        raise DetectionError("INVALID_ARGUMENT", "--attributes applies to faces only")
+    if kind == "face":
+        params["attributes"] = bool(attributes)
+        parameters["attributes"] = bool(attributes)
 
     eng = engine if engine is not None else get_engine(DEFAULT_ENGINE[kind])
     if eng.kind != kind:
@@ -179,6 +184,8 @@ def detect(kind: str, media: str, *, every: Optional[float] = None, at: Optional
             if d is None:
                 dropped += 1
             elif d["score"] >= min_score:
+                if kind == "face" and not attributes:
+                    d.pop("attributes", None)
                 dets.append(d)
         dets.sort(key=lambda d: (d["box"][1], d["box"][0]) if kind == "text" else (-d["score"], d["box"][0]))
         out_frames.append({"index": fr["index"], "t": fr["t"], "detections": dets})

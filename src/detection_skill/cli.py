@@ -8,6 +8,8 @@
   detection tracks faces.json -o tracks.json --json                        # boxes linked over time, redact rectangles
   detection shots talk.mp4 -o shots.json --json                            # every frame: cuts and dissolves (PySceneDetect)
   detection reframe tracks.json --aspect 9:16 --shots shots.json -o reframe.json   # a crop window per sample time
+  detection faces camB.mp4 --every 0.12 --attributes -o b.json                # + size, pose, sharpness, mouth contrast
+  detection speakers --camera a_tracks.json --camera b_tracks.json [--turns turns.json] -o speakers.json  # multicam switch list
   detection check faces.json --json
   detection contract --json
   detection doctor --json
@@ -32,10 +34,11 @@ from .errors import DetectionError
 from .reframe import REFRAME_SCHEMA, make_reframe, validate_reframe
 from .service import DEFAULT_MAX_FRAMES, DEFAULT_MIN_SCORE, DEFAULT_TIMEOUT, LEVELS, detect
 from .shots import DEFAULT_MAX_FRAMES_SHOTS, SHOT_WIDTH, SHOTS_SCHEMA, detect_shots, validate_shots
+from .speakers import SPEAKERS_SCHEMA, make_speakers, validate_speakers
 from .tracks import TRACKS_SCHEMA, fingerprint_bytes, make_tracks, validate_tracks
 
 VALIDATORS = {DETECTIONS_SCHEMA: validate_detections, TRACKS_SCHEMA: validate_tracks, SHOTS_SCHEMA: validate_shots,
-              REFRAME_SCHEMA: validate_reframe}
+              REFRAME_SCHEMA: validate_reframe, SPEAKERS_SCHEMA: validate_speakers}
 
 KIND_OF = {"faces": "face", "text": "text", "objects": "object"}
 
@@ -109,7 +112,7 @@ def cmd_detect(a: argparse.Namespace) -> int:
                  models_dir=getattr(a, "models_dir", None), model=getattr(a, "model", None), lang=getattr(a, "lang", None),
                  vertical=getattr(a, "vertical", False), psm=getattr(a, "psm", None), level=getattr(a, "level", "line"),
                  classes=getattr(a, "classes", None), tessdata_dir=getattr(a, "tessdata_dir", None), ffmpeg_skill=a.ffmpeg_skill,
-                 timeout=a.timeout)
+                 timeout=a.timeout, attributes=getattr(a, "attributes", False))
     if a.output:
         _write_json(a.output, doc)
     c = doc["counts"]
@@ -204,6 +207,43 @@ def cmd_reframe(a: argparse.Namespace) -> int:
     return 0
 
 
+def _floats(text: Optional[str], what: str) -> Optional[List[float]]:
+    if text is None:
+        return None
+    try:
+        return [float(p) for p in text.split(",") if p.strip()]
+    except ValueError:
+        raise DetectionError("INVALID_ARGUMENT", f"{what} {text!r}: expected comma-separated seconds")
+
+
+def cmd_speakers(a: argparse.Namespace) -> int:
+    inputs = list(a.camera) + ([a.turns] if a.turns else [])
+    _check_output(a.output, inputs, a.overwrite)
+    cams, refs = [], []
+    for path in a.camera:
+        doc, fp = _read_doc(path)
+        cams.append(doc)
+        refs.append((path, fp))
+    files: Dict[str, Any] = {"cameras": refs}
+    turns = None
+    if a.turns:
+        turns, tfp = _read_doc(a.turns)
+        files["turns"] = (a.turns, tfp)
+    out = make_speakers(cams, offsets=_floats(a.offsets, "--offsets"), turns=turns, turns_offset=a.turns_offset,
+                        window=a.window, min_activity=a.min_activity, min_shot=a.min_shot, files=files)
+    rep = validate_speakers(out)
+    if not rep.ok:
+        raise DetectionError("INVALID_RESULT", "speakers failed validation; nothing written", rep.errors[:10])
+    _write_json(a.output, out)
+    lines = [f"{out['counts']['ranges']} range(s), {out['counts']['switches']} camera switch(es) ({out['method']['name']}); "
+             f"wrote {a.output}", f"  multicam --switch \"{out['switch']}\""]
+    for r in out["ranges"]:
+        who = f"  {r['speaker']}" if r["speaker"] else ""
+        lines.append(f"  {r['start']:9.3f}-{r['end']:9.3f}s  camera {r['camera']}  {r['track'] or '-'}{who}")
+    _emit(dict(out, ok=True, speakers_file=os.path.abspath(a.output)), a.json, "\n".join(lines))
+    return 0
+
+
 def cmd_check(a: argparse.Namespace) -> int:
     doc = load_json(a.file)
     schema = doc.get("schema") if isinstance(doc, dict) else None
@@ -282,6 +322,8 @@ def parser() -> argparse.ArgumentParser:
     f = _add_detect(sub, "faces", "face boxes (YuNet); never an identity")
     f.add_argument("--models-dir", help="directory with face_detection_yunet_2026may.onnx (default: $DETECTION_MODELS_DIR)")
     f.add_argument("--model", help="model file name inside the models directory")
+    f.add_argument("--attributes", action="store_true", help="also measure each face's size, pose (yaw, roll, frontal), "
+                                                             "sharpness and mouth contrast (heuristics, ADR-005)")
 
     t = _add_detect(sub, "text", "text lines and their OCR text (Tesseract, ja/en)")
     t.add_argument("--lang", default=None, help="Tesseract languages, e.g. jpn+eng (default), eng, jpn")
@@ -344,7 +386,25 @@ def parser() -> argparse.ArgumentParser:
     rf.add_argument("--json", action="store_true")
     rf.set_defaults(func=cmd_reframe)
 
-    c = sub.add_parser("check", help="validate a detections, tracks, shots or reframe document")
+    sp = sub.add_parser("speakers", help="active speaker per time range and the best camera for it: a switch list for "
+                                         "ffmpeg-skill multicam (heuristic)")
+    sp.add_argument("--camera", action="append", required=True,
+                    help="face tracks of one camera (detection faces --attributes -> detection tracks); camera 0 first, "
+                         "repeat for each camera, in multicam's input order")
+    sp.add_argument("--offsets", help="seconds per camera, comma-separated, as multicam --offsets-only reports them "
+                                      "(reference time = camera time + offset; default all 0)")
+    sp.add_argument("--turns", help="diarization-skill turns JSON: switch at each turn, the speaker matched to a face")
+    sp.add_argument("--turns-offset", type=float, default=0.0, help="seconds added to the turns' times (default 0: "
+                                                                     "already on camera 0's timeline)")
+    sp.add_argument("--window", type=_positive, help="seconds of mouth contrast per activity measurement (default 0.6)")
+    sp.add_argument("--min-activity", type=_nonneg, help="mouth activity a speaking face needs (default 0.02)")
+    sp.add_argument("--min-shot", type=_nonneg, help="shortest range in seconds; shorter ones are folded in (default 1.0)")
+    sp.add_argument("-o", "--output", required=True, help="write the speakers JSON here")
+    sp.add_argument("--overwrite", action="store_true")
+    sp.add_argument("--json", action="store_true")
+    sp.set_defaults(func=cmd_speakers)
+
+    c = sub.add_parser("check", help="validate a detections, tracks, shots, reframe or speakers document")
     c.add_argument("file")
     c.add_argument("--json", action="store_true")
     c.set_defaults(func=cmd_check)

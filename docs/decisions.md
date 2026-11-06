@@ -153,3 +153,27 @@ Vertical and square versions (9:16, 1:1, 4:5) of a 16:9 talk need a crop window 
 
 - A heuristic, like `tracks`: two people crossing can swap the track the window follows, and a subject that is not detected (turned away, too small) is not followed. Without `--shots` the whole video is one shot and the subject changes only when its track ends.
 - Measured on the CI fixture (a face walking across a 960x540 frame at 105 px/s, then a cut): the face is inside the window in every sampled frame for 9:16, 1:1 and 4:5, and no move inside a shot exceeds the speed limit.
+
+## ADR-005 Active speaker for multicam switching (`detection speakers`) and face attributes
+
+Roadmap step 10 (field review 2026-11-05, Velisa ROADMAP third round).
+
+### Context
+
+A panel or an interview shot with two or more cameras is cut between them by who is talking. ffmpeg-skill `multicam` aligns the cameras by audio and cuts from a switch list (`START-END:CAM`, reference timeline); its `--switch energy` picks the loudest camera, which is a proxy, not who speaks. Deciding who speaks and which camera shows them best is measurement, and it belongs here; cutting stays with ffmpeg-skill, diarization (anonymous speaker turns) with diarization-skill.
+
+### Decision
+
+- **`detection faces --attributes`** adds measured attributes to every face (`engines/faceattrs.py`, on the full-size frame inside the YuNet engine): `size` (box height / frame height), `yaw_deg`, `roll_deg` and `frontal` (= cos yaw) from the five landmarks only (yaw from the nose tip's offset from the eyes' midpoint along the eye line, in half eye distances; no 3-D model, no pitch), `sharpness` (variance of the Laplacian of the face resized to 96x96 gray) and `mouth_contrast` (gray-level standard deviation around the two mouth corners / 128). Off by default, so existing documents do not change. `detection tracks` keeps them per box. All heuristics; the validator checks each range.
+- **`detection speakers --camera <cam0 face tracks> --camera <cam1 face tracks> [--offsets 0,S] [--turns turns.json] -o speakers.json`** writes `detection-skill/speakers@1` (`schemas/speakers.schema.json`): contiguous ranges on camera 0's timeline, each with the camera, the speaking face track in it, the diarization speaker (with turns), the mean view quality and the reason, and `switch`, the ranges in `multicam --switch` form. Camera order and `--offsets` are multicam's (reference time = camera time + offset, as `multicam --offsets-only` reports `offsets_seconds`).
+- **Mouth motion.** A face's activity at t is the standard deviation of its `mouth_contrast` over the samples within `--window` (0.6 s, at least three samples): talking opens and closes the mouth, silence keeps it still. Faces must be sampled densely (`--every 0.1` to `0.2`); a coarser plan gets a warning.
+- **Best camera.** View quality per box = 0.5 x min(1, size / 0.5) + 0.3 x frontal + 0.2 x sharpness / (sharpness + 100). Without turns, at each step the faces with activity >= `--min-activity` (0.02) and >= half the highest are speaking, and the one with the best quality wins, so a close-up beats the wide shot of the same speaker without knowing it is the same person (nothing is matched across cameras). Nobody speaking: the camera holds; before anyone speaks, camera 0.
+- **With diarization turns** (`diarization-skill/turns@1`, `--turns-offset` when it was measured on another clock): each anonymous speaker is matched, per camera, to the face track whose mean activity during that speaker's turns exceeds its activity during the other speakers' turns the most (`matches`, with both numbers). Each turn goes to the camera whose matched track is in view for at least half the turn with the best quality; the range starts at the turn's start, so the switch list follows the turns exactly. A speaker matched to no face in view: the camera holds.
+- **Shortest shot.** Ranges shorter than `--min-shot` (1.0 s) are folded into the previous range, then neighbours on one camera are joined.
+
+### Consequences
+
+- Heuristics: mouth motion is not speech (chewing, laughing, a hand at the mouth), a speaker turned away or too small is not seen, and mouth contrast depends on lighting and resolution; with turns the decision is only as good as the diarization. Neither a track id nor a speaker id is an identity, and no face is matched across cameras.
+- Without turns a switch lands up to about half a window from the true change (activity is measured over a centred window).
+- Measured on the CI fixture (two cameras, 640x360, 12 s: a wide shot of two faces and a close-up of one; alternating speakers every 3 s, mouths drawn opening and closing with lavfi drawbox; YuNet sampled every 0.12 s): with turns the switch list is exactly the turns; with mouth motion alone every switch is within 0.12 s of the truth, and the close-up is chosen for the speaker it shows. Synthetic, not real footage; real panels (small faces, beards, masks, side angles) are unmeasured. The turns in that test are written from the fixture's construction in diarization-skill's `turns@1` shape, not produced by diarization-skill.
+
