@@ -7,9 +7,13 @@ from typing import Any, Dict, List
 from . import __version__
 from .detections import DETECTIONS_SCHEMA
 from .doctor import SCENEDETECT_RANGE
-from .engines import DEFAULT_ENGINE, DEFAULT_SHOT_ENGINE, SHOT_ENGINES, engine_ids
+from .engines import (DEFAULT_ENGINE, DEFAULT_SHOT_ENGINE, ENGINES_BY_KIND, OBJECT_ENGINES, OPTIONAL_ENGINES, SHOT_ENGINES,
+                      TEXT_ENGINES, engine_ids)
+from .engines.ppocrv6_engine import DOWNLOAD as PPOCRV6_DOWNLOAD
+from .engines.rfdetr_engine import EXPORT as RFDETR_EXPORT, RFDETR_VERSION
 from .frames import ENV_DIRS, REQUIRED_TOOLS, VERSION_RANGE
-from .models import ENV_MODELS_DIR, ENV_TESSDATA_DIR, FACE_MODEL_DEFAULT, KNOWN_MODELS, KNOWN_TESSDATA, SHOT_MODEL_DEFAULT
+from .models import (ENV_MODELS_DIR, ENV_TESSDATA_DIR, FACE_MODEL_DEFAULT, KNOWN_MODELS, KNOWN_TESSDATA, PPOCRV6_TIERS,
+                     RFDETR_MODEL_PREFERENCE, SHOT_MODEL_DEFAULT)
 from .pii import CATEGORIES as PII_CATEGORIES, DEFAULT_LOCALES as PII_DEFAULT_LOCALES, PII_SCHEMA, RULES as PII_RULES
 from .rank import RANK_SCHEMA, WEIGHTS as RANK_WEIGHTS
 from .reframe import METHOD as REFRAME_METHOD, REFRAME_SCHEMA
@@ -32,13 +36,16 @@ TOOLS: List[Dict[str, Any]] = [
      "argv": ["faces", "<video|image>"] + _SAMPLING + ["[--models-dir <dir>]", "[--model <file.onnx>]", "[--attributes]"] + _COMMON},
     {"tool_id": "detection/text", "role": "measurement", "writes_media": False, "mutates_input": False, "deterministic": True,
      "description": "Text lines (Tesseract, ja/en, vertical Japanese with jpn_vert) with their boxes and OCR text, from a "
-                    "video's sampled frames or an image (a slide, a screenshot)",
-     "argv": ["text", "<video|image>"] + _SAMPLING + ["[--lang jpn+eng]", "[--vertical]", "[--psm N]", "[--level line|word]",
-                                                      "[--tessdata-dir <dir>]"] + _COMMON},
+                    "video's sampled frames or an image (a slide, a screenshot); --engine ppocrv6 reads them with PP-OCRv6 "
+                    "(optional, ONNX, line level) instead",
+     "argv": ["text", "<video|image>"] + _SAMPLING + [f"[--engine {'|'.join(TEXT_ENGINES)}]", "[--lang jpn+eng]", "[--vertical]",
+                                                      "[--psm N]", "[--level line|word]", "[--tessdata-dir <dir>]",
+                                                      "[--models-dir <dir>]"] + _COMMON},
     {"tool_id": "detection/objects", "role": "measurement", "writes_media": False, "mutates_input": False, "deterministic": True,
-     "description": "Object boxes (YOLOX, COCO's 80 classes) with class and score, optionally only some classes",
-     "argv": ["objects", "<video|image>"] + _SAMPLING + ["[--classes person,...]", "[--models-dir <dir>]",
-                                                         "[--model <file.onnx>]"] + _COMMON},
+     "description": "Object boxes (YOLOX, COCO's 80 classes) with class and score, optionally only some classes; "
+                    "--engine rfdetr detects them with RF-DETR Small / Medium (optional, an ONNX export) instead",
+     "argv": ["objects", "<video|image>"] + _SAMPLING + [f"[--engine {'|'.join(OBJECT_ENGINES)}]", "[--classes person,...]",
+                                                         "[--models-dir <dir>]", "[--model <file.onnx>]"] + _COMMON},
     {"tool_id": "detection/tracks", "role": "transformation", "writes_media": False, "mutates_input": False, "deterministic": True,
      "description": "Link a video's boxes over time by IoU (or centre distance) into track ids and redact-ready rectangles (union per span, "
                     "padded, even pixels) for ffmpeg-skill redact. A documented heuristic, not identity",
@@ -131,7 +138,9 @@ def contract() -> Dict[str, Any]:
              "version_range": ">=4.8", "install": "pip install 'detection-skill[faces]'"},
             {"id": "scenedetect", "kind": "python-package", "required": False, "for": ["detection/shots"],
              "version_range": SCENEDETECT_RANGE, "license": "BSD-3-Clause", "install": "pip install 'detection-skill[shots]'"},
-            {"id": "onnxruntime", "kind": "python-package", "required": False, "for": ["detection/objects", "detection/shots --engine transnetv2"],
+            {"id": "onnxruntime", "kind": "python-package", "required": False,
+             "for": ["detection/objects", "detection/shots --engine transnetv2", "detection/text --engine ppocrv6",
+                     "detection/objects --engine rfdetr"],
              "version_range": ">=1.16", "install": "pip install 'detection-skill[objects]'"},
             {"id": "tesseract", "kind": "binary", "required": False, "for": ["detection/text"], "version_range": ">=5.0 <6.0",
              "located_by": ["$DETECTION_TESSERACT", "PATH"]},
@@ -145,6 +154,18 @@ def contract() -> Dict[str, Any]:
              "for": ["detection/shots --engine transnetv2"],
              "version_range": "an ONNX export of TransNetV2 (sha256 recorded in every result)", "license": "MIT",
              "located_by": located, "downloaded_at_run_time": False},
+            {"id": "PP-OCRv6_*_det.onnx + PP-OCRv6_*_rec.onnx + PP-OCRv6_*_rec.yml", "kind": "model-weights", "tiers": list(PPOCRV6_TIERS),
+             "required": False, "optional_engine": True, "for": ["detection/text --engine ppocrv6"],
+             "version_range": "the official PP-OCRv6 ONNX exports (PaddlePaddle/PP-OCRv6_<tier>_det_onnx, _rec_onnx) and the "
+                              "recognizer's inference.yml (sha256 of each recorded in every result)",
+             "license": "Apache-2.0", "located_by": located, "downloaded_at_run_time": False,
+             "get": list(PPOCRV6_DOWNLOAD)},
+            {"id": " or ".join(RFDETR_MODEL_PREFERENCE), "kind": "model-weights", "required": False, "optional_engine": True,
+             "for": ["detection/objects --engine rfdetr"],
+             "version_range": f"an ONNX export of the official RF-DETR Small / Medium COCO weights (rfdetr {RFDETR_VERSION}; "
+                              "sha256 recorded in every result)",
+             "license": "Apache-2.0", "located_by": located, "downloaded_at_run_time": False,
+             "get": list(RFDETR_EXPORT), "export_needs": "PyTorch, outside this skill and only for the one-time export"},
             {"id": "tessdata_best jpn/jpn_vert/eng", "kind": "model-weights", "required": False, "for": ["detection/text"],
              "version_range": "tessdata 4.0+ LSTM (tessdata_best recommended; sha256 recorded in every result)",
              "license": "Apache-2.0", "located_by": ["--tessdata-dir", f"${ENV_TESSDATA_DIR}", "tesseract's own tessdata"],
@@ -154,6 +175,7 @@ def contract() -> Dict[str, Any]:
                          "decoding video (frames come from ffmpeg-skill look / scenes)",
                          "blurring or redacting (ffmpeg-skill redact, from the tracks rectangles)",
                          "downloading model files (a one-time manual step, see README)", "network access of any kind at run time",
+                         "exporting RF-DETR to ONNX (a one-time manual step with the rfdetr package and PyTorch, see README)",
                          "slide-change detection (slide-sync-skill)", "segmentation masks or pose", "OCR text correction",
                          "cropping or applying a reframe path (video-editing-skill, ffmpeg-skill crop)",
                          "cutting between cameras or aligning them by audio (ffmpeg-skill multicam, from the speakers switch list)",
@@ -184,6 +206,8 @@ def contract() -> Dict[str, Any]:
                  "heuristic": True, "identity": False, "weights": dict(RANK_WEIGHTS),
                  "attributes": "detection faces --attributes: eyes_open, sharpness, frontal, size"},
         "engines": {"default": dict(DEFAULT_ENGINE, shot=DEFAULT_SHOT_ENGINE), "registered": engine_ids(),
+                    "by_kind": dict({k: list(v) for k, v in ENGINES_BY_KIND.items()}, shot=list(SHOT_ENGINES)),
+                    "optional": list(OPTIONAL_ENGINES),
                     "known_model_sha256": {k: v["file"] for k, v in KNOWN_MODELS.items()},
                     "known_tessdata_sha256": {k: v["lang"] + " (" + v["variant"] + ")" for k, v in KNOWN_TESSDATA.items()}},
         "defaults": {"every": DEFAULT_EVERY, "max_frames": DEFAULT_MAX_FRAMES, "min_score": dict(DEFAULT_MIN_SCORE),

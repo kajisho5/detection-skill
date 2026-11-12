@@ -21,8 +21,9 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from . import __version__
 from .detections import build_detection, build_document, validate_detections
-from .engines import DEFAULT_ENGINE, get_engine
+from .engines import DEFAULT_ENGINE, ENGINES_BY_KIND, get_engine
 from .engines.base import DetectionEngine, EngineRequest, EngineResult, Prepared
+from .engines.ppocrv6_engine import LANG as PPOCRV6_LANG, PPOCRv6Engine
 from .engines.tesseract_engine import DEFAULT_PSM, VERTICAL_PSM, resolve_langs
 from .engines.yolox_engine import COCO_CLASSES
 from .errors import DetectionError
@@ -67,10 +68,19 @@ def detect(kind: str, media: str, *, every: Optional[float] = None, at: Optional
            model: Optional[str] = None, lang: Optional[str] = None, vertical: bool = False, psm: Optional[int] = None,
            level: str = "line", classes: Optional[List[str]] = None, tessdata_dir: Optional[str] = None,
            ffmpeg_skill: Optional[str] = None, timeout: float = DEFAULT_TIMEOUT, engine: Optional[DetectionEngine] = None,
-           runner: Runner = subprocess_runner, attributes: bool = False) -> Dict[str, Any]:
+           runner: Runner = subprocess_runner, attributes: bool = False, engine_id: Optional[str] = None) -> Dict[str, Any]:
+    """`engine_id` picks one of the kind's registered engines (ENGINES_BY_KIND; default DEFAULT_ENGINE[kind]); `engine`
+    injects an engine object instead (the test suite)."""
     t0 = time.time()
     if kind not in DEFAULT_ENGINE:
         raise DetectionError("INVALID_ARGUMENT", f"kind must be one of {sorted(DEFAULT_ENGINE)}")
+    if engine is None:
+        engine_id = engine_id or DEFAULT_ENGINE[kind]
+        if engine_id not in ENGINES_BY_KIND[kind]:
+            raise DetectionError("INVALID_ARGUMENT", f"--engine must be one of {list(ENGINES_BY_KIND[kind])} for {kind}")
+    eng = engine if engine is not None else get_engine(engine_id)  # type: ignore[arg-type]
+    if eng.kind != kind:
+        raise DetectionError("INVALID_ARGUMENT", f"engine {eng.id} detects {eng.kind}, not {kind}")
     if min_score is None:
         min_score = DEFAULT_MIN_SCORE[kind]
     if not isinstance(min_score, (int, float)) or not 0.0 <= float(min_score) <= 1.0:
@@ -90,7 +100,18 @@ def detect(kind: str, media: str, *, every: Optional[float] = None, at: Optional
 
     params: Dict[str, Any] = {}
     parameters: Dict[str, Any] = {"min_score": float(min_score)}
-    if kind == "text":
+    if kind == "text" and isinstance(eng, PPOCRv6Engine):
+        # One multilingual model that reads lines: the Tesseract options would be silently ignored, so they are refused.
+        given = [n for n, v in (("--lang", lang), ("--vertical", vertical), ("--psm", psm is not None),
+                                ("--tessdata-dir", tessdata_dir), ("--level word", level == "word")) if v]
+        if given:
+            raise DetectionError("INVALID_ARGUMENT", f"{', '.join(given)}: Tesseract options, not for --engine ppocrv6 "
+                                                     "(one model for its languages, line level, horizontal text)")
+        if level not in LEVELS:
+            raise DetectionError("INVALID_ARGUMENT", f"--level must be one of {LEVELS}")
+        params.update(level="line")
+        parameters.update(lang=PPOCRV6_LANG, vertical=False, level="line")
+    elif kind == "text":
         if level not in LEVELS:
             raise DetectionError("INVALID_ARGUMENT", f"--level must be one of {LEVELS}")
         langs = resolve_langs(lang, vertical)
@@ -111,9 +132,6 @@ def detect(kind: str, media: str, *, every: Optional[float] = None, at: Optional
         params["attributes"] = bool(attributes)
         parameters["attributes"] = bool(attributes)
 
-    eng = engine if engine is not None else get_engine(DEFAULT_ENGINE[kind])
-    if eng.kind != kind:
-        raise DetectionError("INVALID_ARGUMENT", f"engine {eng.id} detects {eng.kind}, not {kind}")
     prepared = eng.prepare(models_dir=resolve_models_dir(models_dir), model=model, tessdata_dir=tessdata_dir, params=params)
     warnings: List[str] = list(prepared.warnings)
     fingerprint = fingerprint_file(media)
@@ -143,8 +161,9 @@ def detect(kind: str, media: str, *, every: Optional[float] = None, at: Optional
             frames = extract_frames(skill, media, times, facts["width"], run_dir, runner=runner, timeout=timeout)
             sampling = {"method": method, "every": step, "times": times, "scene_points": scene_points,
                         "frames_tool": "ffmpeg-skill/look", "ffmpeg_skill_version": skill.version, "extracted_size": None}
-        ereq = EngineRequest(frames=frames, model_path=prepared.model_path, tessdata_dir=prepared.tessdata_dir,
-                             tesseract=prepared.tesseract, min_score=float(min_score), params=params)
+        ereq = EngineRequest(frames=frames, model_path=prepared.model_path, model_files=dict(prepared.model_files),
+                             tessdata_dir=prepared.tessdata_dir, tesseract=prepared.tesseract, min_score=float(min_score),
+                             params=params)
         t_engine = time.time()
         result = run_engine(eng, ereq, timeout, run_dir, injected=engine is not None)
         engine_seconds = round(time.time() - t_engine, 3)

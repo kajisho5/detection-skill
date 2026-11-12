@@ -17,7 +17,7 @@
 
 Faces, text and objects in video frames, as measured boxes in time, for the [AI Video Production OS](https://github.com/kajisho5/AI-video-production-OS) (department 認識 / Recognition). Each box carries the frame time, the box in pixels and normalized, a score, and the engine, model and model-file sha256 that produced it. Boxes over time become redact-ready rectangles for [ffmpeg-skill](https://github.com/kajisho5/ffmpeg-skill) `redact`. It also measures shot boundaries over every frame (cuts and dissolves) and turns face tracks into a reframing path (a crop window per time for 9:16, 1:1, 4:5).
 
-Local, offline, CPU first ([ADR-001](docs/decisions.md)): faces with [YuNet](https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet) (MIT) through OpenCV, text with [Tesseract 5](https://github.com/tesseract-ocr/tesseract) and [tessdata_best](https://github.com/tesseract-ocr/tessdata_best) `jpn` / `jpn_vert` / `eng` (Apache-2.0), objects with [YOLOX](https://github.com/Megvii-BaseDetection/YOLOX) (Apache-2.0) through ONNX Runtime, shots with [PySceneDetect](https://github.com/Breakthrough/PySceneDetect) (BSD-3-Clause; [TransNetV2](https://github.com/soCzech/TransNetV2), MIT, optional, [ADR-003](docs/decisions.md)). Every engine is optional. Frames of a video come from ffmpeg-skill `look` and `scenes`; this skill never decodes video and never downloads anything. A face box is never an identity.
+Local, offline, CPU first ([ADR-001](docs/decisions.md)): faces with [YuNet](https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet) (MIT) through OpenCV, text with [Tesseract 5](https://github.com/tesseract-ocr/tesseract) and [tessdata_best](https://github.com/tesseract-ocr/tessdata_best) `jpn` / `jpn_vert` / `eng` (Apache-2.0), objects with [YOLOX](https://github.com/Megvii-BaseDetection/YOLOX) (Apache-2.0) through ONNX Runtime, shots with [PySceneDetect](https://github.com/Breakthrough/PySceneDetect) (BSD-3-Clause; [TransNetV2](https://github.com/soCzech/TransNetV2), MIT, optional, [ADR-003](docs/decisions.md)). Two optional second engines run only when asked for with `--engine` ([ADR-008](docs/decisions.md)): [PP-OCRv6](https://huggingface.co/PaddlePaddle/PP-OCRv6_medium_rec) (Apache-2.0) for text and [RF-DETR](https://github.com/roboflow/rf-detr) Small / Medium (Apache-2.0) for objects, both as ONNX files through ONNX Runtime. Every engine is optional. Frames of a video come from ffmpeg-skill `look` and `scenes`; this skill never decodes video and never downloads anything. A face box is never an identity.
 
 ```bash
 pip install -e '.[all]'                       # the skill + OpenCV + ONNX Runtime (faces and objects)
@@ -27,6 +27,8 @@ detection faces talk.mp4 --every 0.5 -o faces.json
 detection tracks faces.json -o tracks.json    # redact rectangles per face track
 detection text slide.png -o text.json         # jpn+eng by default
 detection objects hall.mp4 --every 2 --classes person,laptop -o objects.json
+detection text slide.png --engine ppocrv6 -o text.json        # optional: PP-OCRv6 (files below)
+detection objects hall.mp4 --engine rfdetr --every 2 -o objects.json   # optional: RF-DETR S/M (export below)
 detection shots talk.mp4 -o shots.json        # every frame: cuts and dissolves
 detection reframe tracks.json --aspect 9:16 --shots shots.json -o reframe.json
 detection rank faces.json -o rank.json --top 5  # thumbnail candidates (faces --attributes): eyes open, sharp
@@ -43,6 +45,8 @@ detection speakers --camera camA_tracks.json --camera camB_tracks.json -o speake
 | Faces: YuNet | `pip install -e '.[faces]'` (opencv-python-headless) | `face_detection_yunet_2026may.onnx` from [OpenCV Zoo](https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet), **MIT**. A Git LFS file: download it from the GitHub page, or `git lfs pull` in a clone. Put it in `$DETECTION_MODELS_DIR` |
 | Text: Tesseract 5 | the `tesseract` binary: `apt install tesseract-ocr tesseract-ocr-jpn tesseract-ocr-jpn-vert`, `brew install tesseract tesseract-lang`, or `choco install tesseract` | `jpn.traineddata`, `jpn_vert.traineddata`, `eng.traineddata` from [tessdata_best](https://github.com/tesseract-ocr/tessdata_best), **Apache-2.0**, in a directory set as `--tessdata-dir` / `$DETECTION_TESSDATA_DIR`. Without it, Tesseract's own data is used (on Ubuntu, the `tessdata` variant from apt) and every result says which variant it was |
 | Objects: YOLOX | `pip install -e '.[objects]'` (onnxruntime, opencv-python-headless) | a YOLOX ONNX file from the [YOLOX releases](https://github.com/Megvii-BaseDetection/YOLOX/releases) (e.g. `yolox_s.onnx`, or `yolox_nano.onnx` for speed), **Apache-2.0**, in `$DETECTION_MODELS_DIR`. COCO's 80 classes |
+| Text, optional: PP-OCRv6 (`text --engine ppocrv6`) | `pip install -e '.[objects]'` (onnxruntime, opencv-python-headless); no new package | three files in `$DETECTION_MODELS_DIR`, **Apache-2.0**: the official ONNX exports of [PP-OCRv6_medium_det](https://huggingface.co/PaddlePaddle/PP-OCRv6_medium_det_onnx) and [PP-OCRv6_medium_rec](https://huggingface.co/PaddlePaddle/PP-OCRv6_medium_rec_onnx) (both named `inference.onnx` there) and the recognizer's `inference.yml` (its character dictionary), saved as `PP-OCRv6_medium_det.onnx`, `PP-OCRv6_medium_rec.onnx`, `PP-OCRv6_medium_rec.yml` (the commands below; the `small` tier under the same names also works). About 139 MB |
+| Objects, optional: RF-DETR (`objects --engine rfdetr`) | `pip install -e '.[objects]'`; no new package (no PyTorch) | no ONNX file is published: export the official COCO weights once with the `rfdetr` package (PyTorch is needed for the export only, in any environment with Python 3.10+) and save `rfdetr-small.onnx` or `rfdetr-medium.onnx` in `$DETECTION_MODELS_DIR` (the commands below). **Apache-2.0** (RF-DETR Small and Medium; other sizes are under other terms and are not checked) |
 | Shots: PySceneDetect | `pip install -e '.[shots]'` (scenedetect `>=0.6.7 <0.7`, opencv-python-headless) | none. Optional `--engine transnetv2`: an ONNX export of [TransNetV2](https://github.com/soCzech/TransNetV2) (code and weights **MIT**) as `transnetv2.onnx` in `$DETECTION_MODELS_DIR`, run by ONNX Runtime (`[objects]`); `doctor` reports it `MISSING` (optional) until then |
 | Frames of a video | [ffmpeg-skill](https://github.com/kajisho5/ffmpeg-skill) 2.x or 3.x and FFmpeg (3.x needs Python 3.10+ and FFmpeg 6.1+) | `git clone https://github.com/kajisho5/ffmpeg-skill ~/.claude/skills/ffmpeg-skill`, or `--ffmpeg-skill` / `$DETECTION_FFMPEG_SKILL_DIR` |
 
@@ -55,6 +59,29 @@ Model files are identified by sha256, measured on every run and written into eve
 | tessdata_best `jpn.traineddata` | `36bdf9ac823f5911e624c30d0553e890b8abc7c31a65b3ef14da943658c40b79` |
 | tessdata_best `jpn_vert.traineddata` | `1258be6eb2a9851f18043234ad18cca13ed32690bfff62b335c898bbea371548` |
 | tessdata_best `eng.traineddata` | `8280aed0782fe27257a68ea10fe7ef324ca0f8d85bd2fd145d1c2b560bcb66ba` |
+| `PP-OCRv6_medium_det.onnx` (`PaddlePaddle/PP-OCRv6_medium_det_onnx` `inference.onnx`, revision `6132380`) | `eb13b44b25bb36f89528b68720af8a61d9cf381176107f465db1757b65d086e1` |
+| `PP-OCRv6_medium_rec.onnx` (`PaddlePaddle/PP-OCRv6_medium_rec_onnx` `inference.onnx`, revision `50c7eac`) | `9c09abf0957f7968c7586464b7397b84ad2387a0497a351af40e9acc71b673ba` |
+| `PP-OCRv6_medium_rec.yml` (the same repository's `inference.yml`) | `991b700facf5b50a7de193468207d5f4255b538dde0d312ae3b7c7a9b6873129` |
+| `PP-OCRv6_small_det.onnx` / `_small_rec.onnx` / `_small_rec.yml` | `d73e0058...9410e` / `5435fd74...24634` / `ab078671...c77d1` (in `engines.known_model_sha256`) |
+
+The PP-OCRv6 files, pinned to the revisions above (about 62 MB + 77 MB; the skill itself never downloads; `detection doctor` prints the same commands):
+
+```bash
+cd "$DETECTION_MODELS_DIR"
+curl -fL -o PP-OCRv6_medium_det.onnx https://huggingface.co/PaddlePaddle/PP-OCRv6_medium_det_onnx/resolve/61323801669c338b7891481ec7bac61ce31b576a/inference.onnx
+curl -fL -o PP-OCRv6_medium_rec.onnx https://huggingface.co/PaddlePaddle/PP-OCRv6_medium_rec_onnx/resolve/50c7eacafc52fa7bcf4194e8cd08e46f8558504b/inference.onnx
+curl -fL -o PP-OCRv6_medium_rec.yml https://huggingface.co/PaddlePaddle/PP-OCRv6_medium_rec_onnx/resolve/50c7eacafc52fa7bcf4194e8cd08e46f8558504b/inference.yml
+```
+
+An RF-DETR export, once, in any environment with Python 3.10+ (it installs PyTorch there; this skill never imports it). `RFDETRSmall()` fetches the official COCO weights, `export()` writes `rfdetr-small.onnx` (`RFDETRMedium` writes `rfdetr-medium.onnx`):
+
+```bash
+pip install "rfdetr[onnx]==1.12.0"
+python -c "from rfdetr import RFDETRSmall; RFDETRSmall().export(output_dir='rfdetr-export')"
+cp rfdetr-export/rfdetr-small.onnx "$DETECTION_MODELS_DIR/"
+```
+
+An export has no fixed sha256 (it is made by you), so it runs with its measured sha256 recorded and a warning.
 
 Another file (for example `yolox_s.onnx`) still runs: its measured sha256 is recorded and the result carries a warning that the skill has not seen that file before. `doctor` reports `MISSING` with the source for each missing file and `INCOMPLETE` for a Git LFS pointer.
 
@@ -63,8 +90,8 @@ Another file (for example `yolox_s.onnx`) still runs: its measured sha256 is rec
 | Command | What it does |
 |---|---|
 | `faces <video\|image> [--every S \| --at t,... \| --scenes] [--min-score 0.6] [--models-dir DIR] [--model FILE] [--attributes] [-o det.json]` | Face boxes with five landmarks ([`detection-skill/detections@1`](docs/detections.md)); `--attributes` adds size, pose, sharpness, mouth contrast and eyes open |
-| `text <video\|image> [...] [--lang jpn+eng] [--vertical] [--psm N] [--level line\|word] [--tessdata-dir DIR]` | Text lines (or words) with their OCR text |
-| `objects <video\|image> [...] [--classes person,...] [--min-score 0.3]` | Object boxes with COCO class names |
+| `text <video\|image> [...] [--engine tesseract\|ppocrv6] [--lang jpn+eng] [--vertical] [--psm N] [--level line\|word] [--tessdata-dir DIR] [--models-dir DIR]` | Text lines (or words) with their OCR text; `--engine ppocrv6` (optional) reads lines with PP-OCRv6 and takes none of the Tesseract options |
+| `objects <video\|image> [...] [--engine yolox\|rfdetr] [--classes person,...] [--min-score 0.3]` | Object boxes with COCO class names; `--engine rfdetr` (optional) uses an RF-DETR Small / Medium export |
 | `tracks <det.json> -o tracks.json [--min-iou 0.3] [--max-shift 1.0] [--max-gap S] [--pad 0.15] [--extend S] [--window S] [--min-hits 1]` | Boxes linked over time by IoU into track ids, with even-pixel redact rectangles per span (a heuristic, [docs/detections.md](docs/detections.md#tracks-a-heuristic)) |
 | `shots <video> [--engine pyscenedetect\|transnetv2] [--threshold X] [--min-shot-frames 15] [--width 320] [--max-frames 20000] [-o shots.json]` | Shot boundaries over every frame: each shot's start/end in frames and seconds, cut / gradual, a score, the engine ([`detection-skill/shots@1`](docs/detections.md#shots)) |
 | `reframe <face-tracks.json> -o reframe.json [--aspect 9:16] [--shots shots.json] [--objects object-tracks.json] [--dead-zone 0.1] [--max-speed 0.6]` | A crop window per sample time following the subject, jumping only at a shot boundary, plus one window per shot (a heuristic, [`detection-skill/reframe@1`](docs/detections.md#reframe-a-heuristic)) |
@@ -87,6 +114,7 @@ Common options: `--max-frames 2000` (refuses a bigger sampling plan), `--timeout
 - **Speakers.** Mouth motion (the spread of each face's mouth contrast over 0.6 s) says who speaks; view quality (size, frontal angle, sharpness) picks the camera; with diarization-skill turns, each speaker is matched to a face and the switch follows the turns ([ADR-005](docs/decisions.md)).
 - **Personal data.** OCR lines checked against keyword and format patterns per locale (`intl` by default; `en-US`, `en-GB`, `ja-JP` opt-in); each hit is the whole line's box as a redact rectangle with its reason, always `CONFIRM`, never removed here ([ADR-006](docs/decisions.md)).
 - **Rank.** Each face's eyes open (edge directions in the eye regions), sharpness, frontal angle and size, weighted into a score; frames best first ([ADR-007](docs/decisions.md)).
+- **Optional engines** ([ADR-008](docs/decisions.md)). PP-OCRv6 follows PaddleOCR's general OCR pipeline: the DB text detector on the frame (short side at least 64 px, sides rounded to 32), boxes grown by PaddleOCR's unclip, each line cut out and read by the CTC recognizer (height 48); a detection is the line's axis-aligned box, its text and the recognition score, `lang: multi`. RF-DETR follows rfdetr's ONNX reference: the frame resized to the export's square input, a sigmoid per class, the best query/class pairs, COCO's sparse category ids mapped to the same 80 names YOLOX uses, no NMS. Neither changes a default, and neither needs a package beyond `[objects]`.
 - **Tracks.** Greedy IoU linking between consecutive samples (with a centre-distance fallback for motion faster than the sampling); redact rectangles are the padded union of a track's boxes, snapped to even pixels, extended by one sampling step on each side. Documented as a heuristic, not identity.
 
 ## Measured here
@@ -113,10 +141,10 @@ These are small synthetic fixtures that prove the plumbing and give a floor, not
 python -m unittest discover -s tests -v
 ```
 
-Unit tests inject a test-only engine (`tests/fake_engine.py`, never registered) and a fake ffmpeg-skill (`tests/fake_ffmpeg_skill`, the real tools' JSON shapes, PNG frames written with the standard library), so they run anywhere without engines, models or FFmpeg. They cover the schemas and their validators, sampling, scaling and clipping, the worker and its timeout kill, tracks, shots (frame times, contiguous shots, the blend and TransNetV2 arithmetic), reframe, the CLI, doctor and the contract. Tests that need more skip with the reason: frames through a real ffmpeg-skill checkout (`FFMPEG_SKILL_DIR` or `../ffmpeg-skill`) and FFmpeg; the OS registry conformance checks (`AI_VIDEO_PRODUCTION_OS_DIR` or `../AI-video-production-OS`); the real engines (`DETECTION_MODELS_DIR` with the YuNet / YOLOX files and the Python packages; `scenedetect` for shots; `tesseract` with `jpn`, `jpn_vert`, `eng`, plus Pillow and a Japanese font, `DETECTION_TEST_FONT`, to render the OCR fixture). CER limits: `DETECTION_CER_JA` (default 0.10), `DETECTION_CER_EN` (default 0.05). CI's integration job installs everything (the two model files are fetched by the job and checked against the sha256 above) and fails if any test skips.
+Unit tests inject a test-only engine (`tests/fake_engine.py`, never registered) and a fake ffmpeg-skill (`tests/fake_ffmpeg_skill`, the real tools' JSON shapes, PNG frames written with the standard library), so they run anywhere without engines, models or FFmpeg. They cover the schemas and their validators, sampling, scaling and clipping, the worker and its timeout kill, tracks, shots (frame times, contiguous shots, the blend and TransNetV2 arithmetic), reframe, the CLI, doctor and the contract. The optional PP-OCRv6 and RF-DETR engines are tested without their real model files: the dictionary reader, the resize rules and CTC decoding everywhere; DB post-processing, line crops and RF-DETR decoding with stub sessions; and the whole engine, worker and onnxruntime included, with tiny synthetic ONNX models that `tests/tiny_onnx.py` writes with the standard library (these need numpy, OpenCV and ONNX Runtime). The real PP-OCRv6 and RF-DETR models are not run in this repository. Tests that need more skip with the reason: frames through a real ffmpeg-skill checkout (`FFMPEG_SKILL_DIR` or `../ffmpeg-skill`) and FFmpeg; the OS registry conformance checks (`AI_VIDEO_PRODUCTION_OS_DIR` or `../AI-video-production-OS`); the real engines (`DETECTION_MODELS_DIR` with the YuNet / YOLOX files and the Python packages; `scenedetect` for shots; `tesseract` with `jpn`, `jpn_vert`, `eng`, plus Pillow and a Japanese font, `DETECTION_TEST_FONT`, to render the OCR fixture). CER limits: `DETECTION_CER_JA` (default 0.10), `DETECTION_CER_EN` (default 0.05). CI's integration job installs everything (the two model files are fetched by the job and checked against the sha256 above) and fails if any test skips.
 
 Fixture images: `tests/fixtures/astronaut.jpg` (NASA portrait of Eileen Collins, public domain), `chelsea.jpg` and `coffee.jpg` (CC0), as shipped in scikit-image's `data` module.
 
 ## License
 
-The code is MIT (see `LICENSE`). Model files are not part of this repository and keep their own licences: YuNet (MIT), Tesseract and tessdata (Apache-2.0), YOLOX (Apache-2.0), TransNetV2 (MIT). PySceneDetect is BSD-3-Clause.
+The code is MIT (see `LICENSE`). Model files are not part of this repository and keep their own licences: YuNet (MIT), Tesseract and tessdata (Apache-2.0), YOLOX (Apache-2.0), TransNetV2 (MIT), PP-OCRv6 (Apache-2.0), RF-DETR Small and Medium (Apache-2.0). PySceneDetect is BSD-3-Clause.

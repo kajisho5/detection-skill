@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional
 class EngineRequest:
     frames: List[Dict[str, Any]]                # [{index, t, path}]
     model_path: Optional[str] = None            # the ONNX file (faces, objects)
+    model_files: Dict[str, str] = field(default_factory=dict)  # an engine with several model files: role -> path (PP-OCRv6)
     tessdata_dir: Optional[str] = None          # text
     tesseract: Optional[str] = None             # text: the binary
     min_score: float = 0.0
@@ -53,6 +54,7 @@ class Prepared:
     license: str
     version: str
     model_path: Optional[str] = None
+    model_files: Dict[str, str] = field(default_factory=dict)
     tessdata_dir: Optional[str] = None
     tesseract: Optional[str] = None
     warnings: List[str] = field(default_factory=list)

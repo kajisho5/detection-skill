@@ -5,7 +5,7 @@ Written from a read-only audit of this repository on 2026-10-30. Each step below
 
 ## Where it stands
 
-Early (0.1.0). FACES (YuNet), TEXT (Tesseract, ja/en, vertical) and OBJECTS (YOLOX) write `detection-skill/detections@1` from ffmpeg-skill frames or an image; TRACKS links boxes into redact-ready rectangles (a heuristic); SHOTS writes the frame-accurate shot list (`detection-skill/shots@1`, PySceneDetect, TransNetV2 optional), REFRAME a crop window per time for 9:16 / 1:1 / 4:5 (`detection-skill/reframe@1`, a heuristic), SPEAKERS a multicam switch list to whoever speaks (`detection-skill/speakers@1`, mouth motion or diarization turns, a heuristic), PII personal / patient data on slides as CONFIRM proposals (`detection-skill/pii@1`, patterns per locale), and RANK frames for a thumbnail by eyes open, sharpness, frontal angle and size (`detection-skill/face-rank@1`, a heuristic). Contract and doctor in the OS shape. Measured on synthetic fixtures only; real event footage is not measured yet.
+Early (0.2.0). FACES (YuNet), TEXT (Tesseract, ja/en, vertical; PP-OCRv6 optional) and OBJECTS (YOLOX; RF-DETR Small / Medium optional) write `detection-skill/detections@1` from ffmpeg-skill frames or an image; TRACKS links boxes into redact-ready rectangles (a heuristic); SHOTS writes the frame-accurate shot list (`detection-skill/shots@1`, PySceneDetect, TransNetV2 optional), REFRAME a crop window per time for 9:16 / 1:1 / 4:5 (`detection-skill/reframe@1`, a heuristic), SPEAKERS a multicam switch list to whoever speaks (`detection-skill/speakers@1`, mouth motion or diarization turns, a heuristic), PII personal / patient data on slides as CONFIRM proposals (`detection-skill/pii@1`, patterns per locale), and RANK frames for a thumbnail by eyes open, sharpness, frontal angle and size (`detection-skill/face-rank@1`, a heuristic). Contract and doctor in the OS shape. Measured on synthetic fixtures only; real event footage is not measured yet, and the optional PP-OCRv6 and RF-DETR engines are not measured at all (no real model files in CI).
 
 ## What this repository owns
 
@@ -14,8 +14,8 @@ Early (0.1.0). FACES (YuNet), TEXT (Tesseract, ja/en, vertical) and OBJECTS (YOL
 | Owned job | Status | Note |
 |---|---|---|
 | 顔検出 | partial | `detection faces` (0.1.0, YuNet); fixture recall 5/5, real footage unmeasured |
-| 文字検出(OCR) | partial | `detection text` (0.1.0, Tesseract jpn/jpn_vert/eng; images accepted for slide-sync / stepcap); stepcap and slide-sync not wired yet |
-| 物体検出 | partial | `detection objects` (0.1.0, YOLOX ONNX, COCO 80) |
+| 文字検出(OCR) | partial | `detection text` (0.1.0, Tesseract jpn/jpn_vert/eng; images accepted for slide-sync / stepcap; 0.2.0: `--engine ppocrv6` optional, unmeasured); stepcap and slide-sync not wired yet |
+| 物体検出 | partial | `detection objects` (0.1.0, YOLOX ONNX, COCO 80; 0.2.0: `--engine rfdetr` optional, RF-DETR S/M export, unmeasured) |
 
 ## Wiring
 
@@ -52,6 +52,9 @@ Frames come from ffmpeg-skill `probe` / `scenes` / `look --no-timecode --width <
 - [x] **12. Face attributes for frame choice** — per face: size, frontal angle (from YuNet's five landmarks), blur, and eyes open as a measured value (edge contrast in the eye regions around the landmarks; a heuristic, documented as such), for thumbnail-skill and take selection (Done (ADR-007), [#14](https://github.com/kajisho5/detection-skill/pull/14): `detection faces --attributes` measures per face `size`, `yaw_deg` / `roll_deg` / `frontal` from the five landmarks, `sharpness` (Laplacian variance; low = blurred) and now `eyes_open` (share of edges across the eye in both eye regions around the landmarks, rescaled 0-1; null past 25 degrees of roll; documented as a heuristic); `detection rank <faces.json> [--top N] [--all-faces] -o rank.json` writes `detection-skill/face-rank@1` (`schemas/face-rank.schema.json`), frames best first by 0.35 eyes open + 0.25 sharpness + 0.20 frontal + 0.20 size with every part listed, and the validator checks order, ranks and the weighted sums; on the CI fixture (the portrait open, the same face with both eyes painted closed via the landmarks, and open but blurred, in a 5 s video sampled every 0.5 s through YuNet) the four sharp open frames rank first, every open frame's `eyes_open` (0.99-1.00) is above every closed frame's (0.30-0.35), and the blurred frames' sharpness is below every sharp frame's. Synthetic closed eyes, not real blinks; real footage unmeasured; thumbnail-skill not wired yet)
   - なぜ要るか：サムネイルや代表カットに、目をつぶった顔やぶれたコマを選ばない
   - Done when: a fixture with open and closed eyes is ranked correctly
+- [x] **13. Optional second engines for text and objects** — PP-OCRv6 (Apache-2.0, the official ONNX exports) as `text --engine ppocrv6` and RF-DETR Small / Medium (Apache-2.0, an ONNX export the user makes once with the rfdetr package) as `objects --engine rfdetr`, through ONNX Runtime with no new package; defaults unchanged; doctor reports both as optional with the download / export commands (Done (ADR-008), in 0.2.0: licence, ONNX availability, languages, input preprocessing and output format verified on the upstream pages and recorded in the ADR; results map onto `detections@1` with every model file's sha256; tested with stub sessions and tiny synthetic ONNX models, the real models unmeasured)
+  - Needs: step 1 (ADR-001's follow-ups: a second OCR backend, a transformer detector with a confirmed weight licence)
+  - Done when: both engines run end to end through the worker on synthetic ONNX models, a missing file exits 3 with the commands that get it, doctor and the defaults are unchanged; next, a CER / recall comparison on the real files
 
 ---
 Engine for every media operation: [ffmpeg-skill](https://github.com/kajisho5/ffmpeg-skill) (3.x, 42 tools, contract_version 2.0; treated as complete, proposals go to Velisa's ROADMAP). Orchestrator: [video-production-agent](https://github.com/kajisho5/video-production-agent).

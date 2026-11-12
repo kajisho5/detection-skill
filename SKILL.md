@@ -1,6 +1,6 @@
 ---
 name: detection-skill
-description: Find faces, text (OCR, Japanese and English, including vertical Japanese) and objects in a video's frames or in an image, as measured boxes with time, pixel box, score and model hash, link them over time into redact-ready rectangles, measure shot boundaries (cuts and dissolves) over every frame, turn face tracks into a reframing path for 9:16, 1:1 or 4:5, say who is speaking and which camera shows them best as a multicam switch list, and flag personal and patient data (ids, dates of birth, names, phones, addresses, faces) on slides for a person to confirm before it is blurred, and rank frames for a thumbnail by eyes open, sharpness and face angle. Use when asked to find (and then blur) faces, name badges, screens or other things in event footage, read text on slides, screenshots or signs, check where people or objects are in a shot, list a video's shots and cuts, plan a vertical / square reframe that follows the speaker, cut a multicam panel or interview to whoever is talking, check slides for patient data before publishing, or pick a thumbnail frame where nobody blinks. Local and offline (YuNet, Tesseract, YOLOX, PySceneDetect on CPU); frames come from ffmpeg-skill. It never identifies anyone.
+description: Find faces, text (OCR, Japanese and English, including vertical Japanese) and objects in a video's frames or in an image, as measured boxes with time, pixel box, score and model hash, link them over time into redact-ready rectangles, measure shot boundaries (cuts and dissolves) over every frame, turn face tracks into a reframing path for 9:16, 1:1 or 4:5, say who is speaking and which camera shows them best as a multicam switch list, and flag personal and patient data (ids, dates of birth, names, phones, addresses, faces) on slides for a person to confirm before it is blurred, and rank frames for a thumbnail by eyes open, sharpness and face angle. Use when asked to find (and then blur) faces, name badges, screens or other things in event footage, read text on slides, screenshots or signs, check where people or objects are in a shot, list a video's shots and cuts, plan a vertical / square reframe that follows the speaker, cut a multicam panel or interview to whoever is talking, check slides for patient data before publishing, or pick a thumbnail frame where nobody blinks. Local and offline (YuNet, Tesseract, YOLOX, PySceneDetect on CPU; PP-OCRv6 for text and RF-DETR for objects as optional second engines); frames come from ffmpeg-skill. It never identifies anyone.
 ---
 
 # detection-skill
@@ -15,6 +15,8 @@ Run `detection <command> ... --json` (installed by `pip install -e .`; engines b
 | English only / vertical Japanese | `--lang eng` / `--vertical` |
 | Sparse text in a video frame (signs, badges) | `detection text hall.mp4 --every 2 --psm 11 -o text.json` |
 | People and laptops | `detection objects hall.mp4 --every 2 --classes person,laptop -o objects.json --json` |
+| Text with PP-OCRv6 (optional) | `detection text slide.png --engine ppocrv6 -o text.json --json` (only when `doctor` shows `ppocrv6_models` `OK`) |
+| Objects with RF-DETR (optional) | `detection objects hall.mp4 --engine rfdetr --every 2 -o objects.json --json` (only when `doctor` shows `rfdetr_model` `OK`) |
 | Boxes over time, rectangles to blur | `detection tracks faces.json -o tracks.json --json` |
 | Shots and cuts, frame accurate | `detection shots talk.mp4 -o shots.json --json` (every frame; `pip install -e '.[shots]'`) |
 | Crop window that follows the speaker | `detection reframe tracks.json --aspect 9:16 --shots shots.json -o reframe.json --json` |
@@ -25,7 +27,7 @@ Run `detection <command> ... --json` (installed by `pip install -e .`; engines b
 | Check a file | `detection check faces.json --json` |
 | What this skill declares / needs | `detection contract --json`, `detection doctor --json` |
 
-Model files: `--models-dir` or `DETECTION_MODELS_DIR` (YuNet `face_detection_yunet_2026may.onnx`, a YOLOX `yolox_*.onnx`); Tesseract data: `--tessdata-dir` or `DETECTION_TESSDATA_DIR`, else tesseract's own. ffmpeg-skill: `--ffmpeg-skill`, `DETECTION_FFMPEG_SKILL_DIR`, or `~/.claude/skills/ffmpeg-skill`. An image input needs no ffmpeg-skill.
+Model files: `--models-dir` or `DETECTION_MODELS_DIR` (YuNet `face_detection_yunet_2026may.onnx`, a YOLOX `yolox_*.onnx`; optional `PP-OCRv6_medium_det.onnx` + `PP-OCRv6_medium_rec.onnx` + `PP-OCRv6_medium_rec.yml`, `rfdetr-small.onnx` or `rfdetr-medium.onnx`); Tesseract data: `--tessdata-dir` or `DETECTION_TESSDATA_DIR`, else tesseract's own. ffmpeg-skill: `--ffmpeg-skill`, `DETECTION_FFMPEG_SKILL_DIR`, or `~/.claude/skills/ffmpeg-skill`. An image input needs no ffmpeg-skill.
 
 ## When to use it
 
@@ -38,6 +40,8 @@ Model files: `--models-dir` or `DETECTION_MODELS_DIR` (YuNet `face_detection_yun
 
 - **Personal and patient data** before publishing a medical or case talk: `text` (line level; `--lang eng`, or `jpn+eng` for Japanese slides) on the slide images or frames, `faces` for clinical photos, then `pii text.json --faces faces.json` with the locales of the material (`intl` default; add `en-US`, `en-GB` or `ja-JP`). Show every region (`excerpt`, `reason`) to a person; only the confirmed `redact[]` spans go to ffmpeg-skill `redact`.
 
+- **Second engines** (ADR-008): the defaults stay Tesseract and YOLOX. Use `--engine ppocrv6` for horizontal screen or slide text when the user asks for it or Tesseract's result is poor and `doctor` shows the files `OK`; it reads lines only (no `--vertical`, `--psm`, `--lang`, word level: keep Tesseract for vertical Japanese). Use `--engine rfdetr` the same way for objects. If the files are missing, relay `doctor`'s `download` (PP-OCRv6) or `export` (RF-DETR) commands to the user; never download or export them yourself.
+
 - **Thumbnail or representative take**: `faces --every 0.5 --attributes` (or `--scenes`) -> `rank --top 5`; hand the best frames' times to thumbnail-skill. Use `--all-faces` for group shots.
 
 ## Report it honestly
@@ -46,6 +50,7 @@ Model files: `--models-dir` or `DETECTION_MODELS_DIR` (YuNet `face_detection_yun
 - **Only the sampled frames were looked at.** Say how frames were sampled (`sampling.method`, `every`, the number of frames). Something on screen between samples can be missed; a face that is only visible for 0.3 s can fall between one-second samples. For redaction, say that the result needs a human check of the rendered video before it is published.
 - **It is a detector with misses and false alarms.** Report counts and scores, not certainty. Small (under about 10 px), blurred, turned-away or partly hidden faces are often missed; the default `--min-score` (faces 0.6, objects 0.3, text 0.3) trades misses for false alarms. If you lowered or raised it, say so.
 - **OCR text is as read, not corrected.** Quote `label` as it is; do not fix spelling silently. Mention the language setting and that Japanese and small or stylised text have more errors. If `engine.files[].variant` is not `tessdata_best`, say the data variant differs from the one the ADR recommends.
+- **Say which engine ran.** `engine.id` is `tesseract` or `ppocrv6`, `yolox` or `rfdetr`; their scores are not comparable with each other. PP-OCRv6 and RF-DETR are not measured in this repository (no real model files in CI); say so when you report their results, and quote any warning (an unknown sha256, an RF-DETR file whose licence was not checked).
 - **Shots and reframe are measurements with limits.** Say which engine found the shots and that `gradual` comes from a blend test (PySceneDetect) or a network (TransNetV2). A reframe is a heuristic: report `counts.subject_outside` and each shot's `subject_inside_fraction`; a subject is a box track, not a person.
 - **Speakers is a heuristic too.** Say whether it used mouth motion alone or diarization turns (`method.name`), and that mouth motion is not speech (laughing, chewing, a hand at the mouth move it; a speaker turned away is not seen). Quote `ranges[].reason`; a `SPEAKER_nn` or a track id names nobody. Recommend watching the cut before publishing.
 - **PII is a pattern check.** Every region is `CONFIRM`: ask, never blur or drop on your own. Say which locales were used, that a bare name or a date without its keyword is not found and OCR misreads hide data, so "no region" is not "no personal data". Never paste the matched values into a message; `excerpt` is masked on purpose.
