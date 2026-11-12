@@ -11,6 +11,10 @@ Tests that need more skip with the reason, and run where it is available:
   in DETECTION_MODELS_DIR; text needs tesseract with jpn/jpn_vert/eng (DETECTION_TESSDATA_DIR or tesseract's own),
   Pillow and a Japanese font to render the fixture; shots need scenedetect + opencv + ffmpeg + ffmpeg-skill (fixtures
   rendered with ffmpeg's lavfi sources); reframe on real footage needs all of faces and shots.
+- the optional engines of ADR-008 (PP-OCRv6, RF-DETR) are tested without their real model files: their pure pieces
+  everywhere, their numpy / OpenCV pieces with stub sessions, and the whole engine (worker, onnxruntime, document) with
+  tiny synthetic ONNX models written by tests/tiny_onnx.py; they need numpy + OpenCV (+ onnxruntime), which CI's
+  integration job installs. The real PP-OCRv6 and RF-DETR models are not run in this repository.
 
 Fixture images (tests/fixtures): astronaut.jpg (NASA portrait of Eileen Collins, public domain), chelsea.jpg (CC0),
 coffee.jpg (CC0), all as shipped in scikit-image's data module. Hand-annotated boxes are below (ASTRONAUT_FACE etc.).
@@ -63,6 +67,11 @@ from detection_skill.engines.shotcore import (blend_runs, merge_boundaries, tran
                                               transnet_windows)
 from detection_skill.frames import seek_time  # noqa: E402
 from fake_engine import MODEL_SHA, ScriptedEngine, ScriptedShotEngine, png_size, write_png  # noqa: E402
+import tiny_onnx  # noqa: E402
+from detection_skill.engines import ppocrv6_engine as ppocr  # noqa: E402
+from detection_skill.engines import rfdetr_engine as rfd  # noqa: E402
+from detection_skill.engines.yolox_engine import COCO_CLASSES  # noqa: E402
+from detection_skill.models import combined_sha256  # noqa: E402
 
 FIXTURES = ROOT / "tests" / "fixtures"
 FAKE_FFMPEG_SKILL = str(ROOT / "tests" / "fake_ffmpeg_skill")
@@ -1192,6 +1201,367 @@ class RankTests(TmpCase):
         self.assertEqual((rc, out["error"]["code"]), (2, "OUTPUT_IS_INPUT"))
 
 
+# ---- optional engines (ADR-008): PP-OCRv6 (text), RF-DETR (objects) --------------------------------------
+HAVE_NP = importlib.util.find_spec("numpy") is not None
+NP_WHY = "needs numpy and opencv-python-headless (the objects extra; CI's integration job installs them)"
+ORT_WHY = "needs onnxruntime, numpy and opencv-python-headless (the objects extra; CI's integration job installs them)"
+
+
+class _Input:
+    def __init__(self, name, shape, type_="tensor(float)"):
+        self.name, self.shape, self.type = name, shape, type_
+
+
+class StubSession:
+    """onnxruntime's get_inputs() / get_outputs() / run() over a function of the input array (no model file)."""
+
+    def __init__(self, name, shape, fn, outputs=("out",)):
+        self.name, self.shape, self.fn, self.outputs = name, shape, fn, outputs
+        self.calls = []
+
+    def get_inputs(self):
+        return [_Input(self.name, self.shape)]
+
+    def get_outputs(self):
+        return [_Input(n, None) for n in self.outputs]
+
+    def run(self, _names, feed):
+        self.calls.append(feed[self.name].shape)
+        out = self.fn(feed[self.name])
+        return list(out) if isinstance(out, tuple) else [out]
+
+
+def slide_image(np, cv2, path, rects, size=(180, 320)):
+    """White rectangles [x, y, w, h] on black, written as PNG."""
+    img = np.zeros(size + (3,), np.uint8)
+    for x, y, w, h in rects:
+        img[y:y + h, x:x + w] = 255
+    cv2.imwrite(path, img)
+    return img
+
+
+def grown(x, y, w, h, ratio=ppocr.DB_UNCLIP_RATIO):
+    """The box DB post-processing gives for a filled w x h rectangle at (x, y): the contour runs through the pixel centres
+    (w - 1 by h - 1) and each side grows by area x ratio / perimeter."""
+    rw, rh = w - 1, h - 1
+    d = rw * rh * ratio / (2.0 * (rw + rh))
+    return [x - d, y - d, rw + 2 * d, rh + 2 * d]
+
+
+class PPOCRv6Tests(TmpCase):
+    YML = "\n".join(["Global:", "  model_name: PP-OCRv6_medium_rec", "PostProcess:", "  name: CTCLabelDecode",
+                     "  character_dict:", "  - '!'", "  - " + "'" * 4, "  - '0'", "  - $", "  - 　", '  - "\\u00e9"',
+                     "  - あ", "  - 漢", "  - A", "Other:", "  x: 1", ""])
+
+    def test_character_dictionary_reader(self):
+        chars = ppocr.parse_character_dict(self.YML)
+        self.assertEqual(chars, ["!", "'", "0", "$", "　", "é", "あ", "漢", "A"])
+        self.assertEqual(ppocr.characters_for(chars), ["blank"] + chars + [" "])
+        for bad in ("PostProcess:\n  character_dict:\n  - ~\n", "PostProcess:\n  character_dict:\n  - &a x\n",
+                    "PostProcess:\n  character_dict:\n  -\n", "PostProcess:\n  name: CTCLabelDecode\n", "Global:\n  a: 1\n"):
+            with self.assertRaises(ValueError, msg=bad):
+                ppocr.parse_character_dict(bad)
+        p = os.path.join(self.tmp, "PP-OCRv6_medium_rec.yml")
+        Path(p).write_text("not: a dictionary\n", encoding="utf-8")
+        with self.assertRaises(DetectionError) as cm:
+            ppocr.load_characters(p)
+        self.assertEqual(cm.exception.code, "MODEL_NOT_FOUND")
+
+    def test_resize_rules(self):
+        self.assertEqual(ppocr.det_resize_shape(180, 320), (192, 320))       # short side >= 64: only rounded to x32
+        self.assertEqual(ppocr.det_resize_shape(1080, 1920), (1088, 1920))
+        self.assertEqual(ppocr.det_resize_shape(20, 300), (64, 960))         # short side raised to 64
+        self.assertEqual(ppocr.det_resize_shape(100, 5000), (64, 4000))      # long side capped at 4000
+        self.assertEqual(ppocr.det_resize_shape(1080, 1920, 960, "max"), (544, 960))
+        self.assertEqual(ppocr.rec_widths(48, 100), (100, 320))               # padded to 320
+        self.assertEqual(ppocr.rec_widths(30, 600), (960, 960))               # aspect kept, no padding
+        self.assertEqual(ppocr.rec_widths(10, 1000), (3200, 3200))            # capped at 3200
+
+    def test_ctc_decode_and_quads(self):
+        chars = ["blank", "A", "B", " "]
+        text, score = ppocr.ctc_decode([0, 1, 1, 0, 1, 2, 2, 3, 0], [0.9, 0.8, 0.6, 0.9, 0.7, 0.5, 0.9, 0.6, 0.9], chars)
+        self.assertEqual(text, "AAB ")
+        self.assertAlmostEqual(score, (0.8 + 0.7 + 0.5 + 0.6) / 4)
+        self.assertEqual(ppocr.ctc_decode([0, 0], [0.9, 0.9], chars), ("", 0.0))
+        quad = ppocr.order_quad([[10, 40], [100, 10], [110, 40], [0, 10]])
+        self.assertEqual(quad, [[0.0, 10.0], [100.0, 10.0], [110.0, 40.0], [10.0, 40.0]])
+        self.assertEqual(ppocr.quad_box(quad), [0.0, 10.0, 110.0, 30.0])
+
+    @unittest.skipUnless(HAVE_CV2, NP_WHY)
+    def test_db_post_processing(self):
+        import cv2
+        import numpy as np
+        pred = np.zeros((192, 320), np.float32)
+        pred[40:70, 30:230] = 0.95          # a line
+        pred[100:130, 40:100] = 0.5         # above the binary threshold, below the box threshold: dropped
+        pred[150:152, 150:152] = 0.99       # smaller than the minimum size: dropped
+        boxes = ppocr.db_boxes(pred, 320, 192, np, cv2)
+        self.assertEqual(len(boxes), 1)
+        quad, score = boxes[0]
+        self.assertAlmostEqual(score, 0.95, places=3)
+        want = grown(30, 40, 200, 30)
+        for got, exp in zip(ppocr.quad_box(quad), want):
+            self.assertLessEqual(abs(got - exp), 1.0)
+        half = ppocr.db_boxes(pred, 160, 96, np, cv2)[0][0]                # scaled back to the frame
+        self.assertLessEqual(abs(ppocr.quad_box(half)[2] - want[2] / 2), 1.0)
+
+    @unittest.skipUnless(HAVE_CV2, NP_WHY)
+    def test_crop_turns_tall_lines(self):
+        import cv2
+        import numpy as np
+        img = np.zeros((200, 200, 3), np.uint8)
+        wide = ppocr.crop_line(img, [[10, 10], [110, 10], [110, 40], [10, 40]], np, cv2)
+        tall = ppocr.crop_line(img, [[10, 10], [40, 10], [40, 110], [10, 110]], np, cv2)
+        self.assertEqual(wide.shape[:2], (30, 100))
+        self.assertEqual(tall.shape[:2], (30, 100))   # 100 tall, 30 wide: turned 90 degrees
+        x = ppocr.rec_input(wide, np, cv2)
+        self.assertEqual(x.shape, (1, 3, 48, 320))
+        self.assertTrue(np.all(x[:, :, :, 160:] == 0))                     # zero padding right of the resized line
+        self.assertEqual(ppocr.rec_input(wide, np, cv2, static_width=200).shape, (1, 3, 48, 200))
+
+    @unittest.skipUnless(HAVE_CV2, NP_WHY)
+    def test_read_lines_with_stub_sessions(self):
+        import cv2
+        import numpy as np
+        img = slide_image(np, cv2, os.path.join(self.tmp, "s.png"), [(30, 40, 200, 30), (60, 110, 100, 30)])
+        det = StubSession("x", ["N", 3, "H", "W"], lambda x: 1.0 / (1.0 + np.exp(-4.0 * x.mean(1, keepdims=True))))
+        chars = ppocr.characters_for(["A", "B"])
+
+        def rec_fn(x):
+            steps = x.shape[3] // 8
+            p = np.full((1, steps, len(chars)), 0.01, np.float32)
+            p[0, :, 0] = 0.97
+            p[0, 1, 0], p[0, 1, 1] = 0.01, 0.97                             # "A", then blanks, then "B"
+            p[0, 3, 0], p[0, 3, 2] = 0.01, 0.95
+            return p
+        rec = StubSession("x", ["N", 3, 48, "W"], rec_fn)
+        lines = ppocr.read_lines(det, rec, chars, img, np, cv2)
+        self.assertEqual(sorted(tuple(round(v) for v in ln["box"][:2]) for ln in lines), [(10, 21), (42, 93)])
+        for ln in lines:
+            self.assertEqual((ln["label"], ln["lang"], ln["words"]), ("AB", "multi", 1))
+            self.assertAlmostEqual(ln["score"], 0.96, places=5)
+        self.assertEqual(det.calls, [(1, 3, 192, 320)])
+        self.assertTrue(all(c[2] == 48 and c[3] >= 320 for c in rec.calls))
+        self.assertEqual(ppocr.read_lines(det, rec, chars, img, np, cv2, min_score=0.99), [])
+        logits = StubSession("x", ["N", 3, 48, "W"], lambda x: np.log(rec_fn(x)))   # an export without the softmax
+        self.assertEqual([ln["label"] for ln in ppocr.read_lines(det, logits, chars, img, np, cv2)], ["AB", "AB"])
+        with self.assertRaises(DetectionError) as cm:                                  # dictionary of another model
+            ppocr.read_lines(det, rec, ppocr.characters_for(["A"]), img, np, cv2)
+        self.assertEqual(cm.exception.code, "ENGINE_FAILED")
+        bad = StubSession("x", ["N", 3, "H", "W"], lambda x: x[:, :2])
+        with self.assertRaises(DetectionError):
+            ppocr.read_lines(bad, rec, chars, img, np, cv2)
+
+    def tiny_models(self, chars=("A", "B")):
+        m = os.path.join(self.tmp, "models")
+        os.makedirs(m, exist_ok=True)
+        tiny_onnx.write(os.path.join(m, "PP-OCRv6_medium_det.onnx"), tiny_onnx.ppocr_det())
+        tiny_onnx.write(os.path.join(m, "PP-OCRv6_medium_rec.onnx"), tiny_onnx.ppocr_rec(len(chars) + 2))
+        Path(m, "PP-OCRv6_medium_rec.yml").write_text(tiny_onnx.dictionary_yml(chars), encoding="utf-8")
+        return m
+
+    @unittest.skipUnless(HAVE_CV2 and HAVE_ORT, ORT_WHY)
+    def test_engine_with_tiny_onnx_models(self):
+        import cv2
+        import numpy as np
+        m = self.tiny_models()
+        img = os.path.join(self.tmp, "slide.png")
+        slide_image(np, cv2, img, [(30, 40, 200, 30), (60, 110, 100, 30)])
+        doc = detect("text", img, engine_id="ppocrv6", models_dir=m)       # the real engine, in the worker
+        self.assertTrue(validate_detections(doc).ok)
+        eng = doc["engine"]
+        self.assertEqual((eng["id"], eng["kind"], eng["runtime"], eng["model_license"]),
+                         ("ppocrv6", "text", "onnxruntime", "Apache-2.0"))
+        self.assertEqual([f["role"] for f in eng["files"]], ["det", "rec", "dict"])
+        self.assertEqual(eng["model_sha256"], combined_sha256(eng["files"]))
+        self.assertEqual(eng["details"]["dictionary_size"], 2)
+        self.assertEqual(len([w for w in doc["warnings"] if "sha256 not in the skill's table" in w]), 3)
+        self.assertEqual(doc["parameters"], {"min_score": 0.3, "lang": "multi", "vertical": False, "level": "line"})
+        dets = doc["frames"][0]["detections"]
+        self.assertEqual([d["label"] for d in dets], ["A", "A"])
+        for d, (x, y, w, h) in zip(dets, [(30, 40, 200, 30), (60, 110, 100, 30)]):
+            # the detector sees 320 x 192 (rounded to x32); boxes come back in the 320 x 180 frame
+            want = grown(x, y * 192 / 180, w, h * 192 / 180)
+            want = [want[0], want[1] * 180 / 192, want[2], want[3] * 180 / 192]
+            for got, exp in zip(d["box"], want):
+                self.assertLessEqual(abs(got - exp), 2.0, (d["box"], want))
+            self.assertEqual((d["engine"], d["model_sha256"], d["lang"]), ("ppocrv6", eng["model_sha256"], "multi"))
+        rc, out = run_cli("text", img, "--engine", "ppocrv6", "--models-dir", m, "--json")
+        self.assertEqual((rc, out["engine"]["id"], out["counts"]["detections"]), (0, "ppocrv6", 2))
+        self.assertNotIn(self.tmp, json.dumps(out["engine"]))
+        Path(m, "PP-OCRv6_medium_rec.yml").write_text(tiny_onnx.dictionary_yml(["A", "B", "C"]), encoding="utf-8")
+        rc, out = run_cli("text", img, "--engine", "ppocrv6", "--models-dir", m, "--json")
+        self.assertEqual((rc, out["error"]["code"]), (4, "ENGINE_FAILED"))   # dictionary does not fit the recognizer
+
+    def test_refusals_missing_files_and_doctor(self):
+        img = os.path.join(self.tmp, "a.png")
+        write_png(img, 64, 64)
+        m = os.path.join(self.tmp, "models")
+        os.mkdir(m)
+        for extra in (["--vertical"], ["--lang", "eng"], ["--psm", "11"], ["--level", "word"]):
+            rc, out = run_cli("text", img, "--engine", "ppocrv6", "--models-dir", m, *extra, "--json")
+            self.assertEqual((rc, out["error"]["code"]), (2, "INVALID_ARGUMENT"), extra)
+        with redirect_stdout(io.StringIO()), self.assertRaises(SystemExit):
+            cli.main(["text", img, "--engine", "nope"])
+        rc, out = run_cli("text", img, "--engine", "ppocrv6", "--models-dir", m, "--json")
+        self.assertEqual(rc, 3, out)
+        if HAVE_CV2 and HAVE_ORT:
+            self.assertEqual(out["error"]["code"], "MODEL_NOT_FOUND")
+            self.assertTrue(any("curl -fL -o PP-OCRv6_medium_rec.onnx https://huggingface.co/PaddlePaddle/" in c
+                                for c in out["error"]["detail"]))
+        else:
+            self.assertEqual(out["error"]["code"], "ENGINE_UNAVAILABLE")
+        d = doctor(models_dir=m, ffmpeg_skill=FAKE_FFMPEG_SKILL)
+        pc = d["checks"]["ppocrv6_models"]
+        self.assertEqual((pc["status"], pc["optional"]), ("MISSING", True))
+        self.assertEqual(pc["missing"], ["PP-OCRv6_medium_det.onnx", "PP-OCRv6_medium_rec.onnx", "PP-OCRv6_medium_rec.yml"])
+        self.assertEqual(len(pc["download"]), 4)
+        self.assertIn("huggingface.co/PaddlePaddle/PP-OCRv6_medium_det_onnx/resolve/", pc["install"])
+        self.assertIn("ppocrv6_models: MISSING (optional)", d["notes"])
+        self.assertFalse(any(p.startswith("ppocrv6_models") for p in d["problems"]))
+        self.assertFalse(d["optional_ready"]["text_ppocrv6"])
+        self.assertNotIn("text_ppocrv6", d["ready"])
+        tiny_onnx.write(os.path.join(m, "PP-OCRv6_medium_det.onnx"), tiny_onnx.ppocr_det())
+        pc = doctor(models_dir=m)["checks"]["ppocrv6_models"]
+        self.assertEqual((pc["status"], pc["missing"]), ("INCOMPLETE", ["PP-OCRv6_medium_rec.onnx", "PP-OCRv6_medium_rec.yml"]))
+        self.tiny_models()
+        pc = doctor(models_dir=m)["checks"]["ppocrv6_models"]
+        self.assertEqual((pc["status"], pc["tier"], [f["role"] for f in pc["files"]]), ("OK", "medium", ["det", "rec", "dict"]))
+        self.assertIsNone(pc["install"])
+        self.assertEqual(doctor(models_dir=m)["optional_ready"]["text_ppocrv6"], HAVE_CV2 and HAVE_ORT)
+
+    def test_tesseract_stays_the_default(self):
+        img = os.path.join(self.tmp, "a.png")
+        write_png(img, 64, 64)
+        rc, out = run_cli("text", img, "--tessdata-dir", os.path.join(self.tmp, "none"), "--json")
+        self.assertEqual(rc, 3)
+        self.assertIn(out["error"]["code"], ("ENGINE_UNAVAILABLE", "LANGUAGE_NOT_FOUND"))   # tesseract was asked, not PP-OCRv6
+        self.assertEqual(contract()["engines"]["default"]["text"], "tesseract")
+
+
+class RfdetrTests(TmpCase):
+    def test_coco_class_map(self):
+        self.assertEqual(len(rfd.COCO_IDS), 80)
+        self.assertEqual(list(rfd.SLOT_NAMES.values()), list(COCO_CLASSES))      # the names YOLOX uses, in order
+        self.assertEqual((rfd.class_name(1), rfd.class_name(73), rfd.class_name(90)), ("person", "laptop", "toothbrush"))
+        unnamed = [k for k in range(rfd.CLASS_SLOTS) if rfd.class_name(k) is None]
+        self.assertEqual(unnamed, [0, 12, 26, 29, 30, 45, 66, 68, 69, 71, 83])
+
+    @unittest.skipUnless(HAVE_NP, NP_WHY)
+    def test_decode(self):
+        import numpy as np
+        boxes = np.array([[0.5, 0.5, 0.2, 0.4], [0.05, 0.05, 0.2, 0.2], [0.7, 0.7, 0.1, 0.1]], np.float32)
+        logits = np.full((3, 91), -9.0, np.float32)
+        logits[0, 1], logits[0, 62] = 3.0, 2.0     # one query, two classes: both kept (pairs are ranked, not argmax)
+        logits[1, 73] = 1.0                        # partly outside the frame: clipped
+        logits[2, 12] = 5.0                        # a slot without a COCO category: dropped
+        # the Q = 3 best query/class pairs are kept (rfdetr's rule): slot 12, person, chair; slot 12 is then dropped
+        self.assertEqual([d["label"] for d in rfd.decode(boxes, logits, 200, 100, np, min_score=0.5)], ["person", "chair"])
+        out = rfd.decode(boxes, logits, 200, 100, np, min_score=0.5, num_select=4)
+        self.assertEqual([d["label"] for d in out], ["person", "chair", "laptop"])
+        self.assertEqual([round(v, 3) for v in out[0]["box"]], [80.0, 30.0, 40.0, 40.0])
+        self.assertEqual([round(v, 3) for v in out[2]["box"]], [0.0, 0.0, 30.0, 15.0])
+        self.assertAlmostEqual(out[0]["score"], 1 / (1 + math.exp(-3.0)), places=5)
+        self.assertEqual([d["label"] for d in rfd.decode(boxes, logits, 200, 100, np, min_score=0.9)], ["person"])
+        self.assertEqual([d["label"] for d in rfd.decode(boxes, logits, 200, 100, np, min_score=0.5, num_select=4,
+                                                         wanted=["laptop"])], ["laptop"])
+        self.assertEqual(len(rfd.decode(boxes, logits, 200, 100, np, min_score=0.5, num_select=1)), 0)   # slot 12 only
+        with self.assertRaises(DetectionError) as cm:
+            rfd.decode(boxes, logits[:, :81], 200, 100, np)          # a custom-trained layout
+        self.assertEqual(cm.exception.code, "ENGINE_FAILED")
+
+    @unittest.skipUnless(HAVE_CV2, NP_WHY)
+    def test_preprocess_and_io_layout(self):
+        import cv2
+        import numpy as np
+        img = np.zeros((90, 160, 3), np.uint8)
+        img[:, :] = (255, 0, 0)                     # BGR blue
+        x = rfd.preprocess(img, 64, 64, np, cv2)
+        self.assertEqual((x.shape, str(x.dtype)), ((1, 3, 64, 64), "float32"))
+        self.assertAlmostEqual(float(x[0, 2, 0, 0]), (1 - 0.406) / 0.225, places=4)   # RGB: blue is the third channel
+        self.assertAlmostEqual(float(x[0, 0, 0, 0]), (0 - 0.485) / 0.229, places=4)
+        sess = StubSession("input", [1, 3, 64, 64], lambda x: None, outputs=("labels", "dets"))
+        self.assertEqual(rfd.io_layout(sess)[1:], (64, 64, "float32", 1, 0))         # matched by name, not position
+        with self.assertRaises(DetectionError):
+            rfd.io_layout(StubSession("input", [1, 3, "H", "W"], lambda x: None, outputs=("dets", "labels")))
+        with self.assertRaises(DetectionError):
+            rfd.io_layout(StubSession("input", [1, 3, 64, 64], lambda x: None, outputs=("boxes", "scores")))
+
+    def tiny_export(self, name="rfdetr-small.onnx"):
+        m = os.path.join(self.tmp, "models")
+        os.makedirs(m, exist_ok=True)
+        dets = [[0.5, 0.5, 0.2, 0.4], [0.25, 0.25, 0.1, 0.1], [0.7, 0.7, 0.1, 0.1]]
+        logits = [[-5.0] * 91 for _ in dets]
+        logits[0][1], logits[1][73], logits[2][12] = 3.0, 1.0, 4.0
+        tiny_onnx.write(os.path.join(m, name), tiny_onnx.rfdetr(dets, logits, 64))
+        return m
+
+    @unittest.skipUnless(HAVE_CV2 and HAVE_ORT, ORT_WHY)
+    def test_engine_with_a_tiny_onnx_export(self):
+        m = self.tiny_export()
+        img = os.path.join(self.tmp, "hall.png")
+        write_png(img, 320, 180)
+        doc = detect("object", img, engine_id="rfdetr", models_dir=m)     # the real engine, in the worker
+        self.assertTrue(validate_detections(doc).ok)
+        eng = doc["engine"]
+        self.assertEqual((eng["id"], eng["model"], eng["model_license"]),
+                         ("rfdetr", "RF-DETR Small (COCO, ONNX export)", "Apache-2.0"))
+        self.assertEqual(eng["details"]["input_size"], [64, 64])
+        dets = doc["frames"][0]["detections"]
+        self.assertEqual([(d["label"], d["box"]) for d in dets],
+                         [("person", [128.0, 54.0, 64.0, 72.0]), ("laptop", [64.0, 36.0, 32.0, 18.0])])
+        rc, out = run_cli("objects", img, "--engine", "rfdetr", "--models-dir", m, "--classes", "laptop", "--json")
+        self.assertEqual((rc, [d["label"] for d in out["frames"][0]["detections"]]), (0, ["laptop"]))
+        os.rename(os.path.join(m, "rfdetr-small.onnx"), os.path.join(m, "rfdetr-xlarge.onnx"))
+        rc, out = run_cli("objects", img, "--engine", "rfdetr", "--models-dir", m, "--model", "rfdetr-xlarge.onnx", "--json")
+        self.assertEqual((rc, out["engine"]["model_license"]), (0, "unknown (not checked)"))
+        self.assertTrue(any("PML 1.0" in w for w in out["warnings"]))
+
+    def test_missing_export_and_doctor(self):
+        img = os.path.join(self.tmp, "a.png")
+        write_png(img, 64, 64)
+        m = os.path.join(self.tmp, "models")
+        os.mkdir(m)
+        rc, out = run_cli("objects", img, "--engine", "rfdetr", "--models-dir", m, "--json")
+        self.assertEqual(rc, 3, out)
+        if HAVE_CV2 and HAVE_ORT:
+            self.assertEqual(out["error"]["code"], "MODEL_NOT_FOUND")
+            self.assertTrue(any("RFDETRSmall().export(" in c for c in out["error"]["detail"]))
+        d = doctor(models_dir=m)
+        rf = d["checks"]["rfdetr_model"]
+        self.assertEqual((rf["status"], rf["optional"]), ("MISSING", True))
+        self.assertTrue(any(c.startswith('pip install "rfdetr[onnx]==') for c in rf["export"]))
+        self.assertIn("PyTorch", rf["install"])
+        self.assertIn("rfdetr_model: MISSING (optional)", d["notes"])
+        self.assertFalse(any(p.startswith("rfdetr_model") for p in d["problems"]))
+        self.assertFalse(d["optional_ready"]["objects_rfdetr"])
+        self.tiny_export()
+        rf = doctor(models_dir=m)["checks"]["rfdetr_model"]
+        self.assertEqual((rf["status"], rf["file"], rf["install"]), ("OK", "rfdetr-small.onnx", None))
+        self.assertEqual(inspect_models(m)["object"]["status"], "MISSING")             # it is not a YOLOX file
+        rc, out = run_cli("objects", img, "--models-dir", m, "--json")                # YOLOX stays the default
+        self.assertEqual(rc, 3)
+        if HAVE_CV2 and HAVE_ORT:
+            self.assertEqual(out["error"]["code"], "MODEL_NOT_FOUND")
+            self.assertIn("yolox", out["error"]["message"])
+
+    def test_contract_lists_the_optional_engines(self):
+        c = contract()
+        self.assertEqual(c["engines"]["default"], {"face": "yunet", "text": "tesseract", "object": "yolox", "shot": "pyscenedetect"})
+        self.assertEqual(c["engines"]["by_kind"]["text"], ["tesseract", "ppocrv6"])
+        self.assertEqual(c["engines"]["by_kind"]["object"], ["yolox", "rfdetr"])
+        self.assertEqual(set(c["engines"]["optional"]), {"transnetv2", "ppocrv6", "rfdetr"})
+        weights = {d["id"]: d for d in c["dependencies"] if d["kind"] == "model-weights"}
+        for key in ("PP-OCRv6_*_det.onnx + PP-OCRv6_*_rec.onnx + PP-OCRv6_*_rec.yml", "rfdetr-small.onnx or rfdetr-medium.onnx"):
+            dep = weights[key]
+            self.assertEqual((dep["required"], dep["optional_engine"], dep["downloaded_at_run_time"], dep["license"]),
+                             (False, True, False, "Apache-2.0"))
+            self.assertTrue(dep["get"])
+        tools = {t["tool_id"]: t for t in c["tools"]}
+        self.assertIn("[--engine tesseract|ppocrv6]", tools["detection/text"]["argv"])
+        self.assertIn("[--engine yolox|rfdetr]", tools["detection/objects"]["argv"])
+
+
 # ---- small pieces ---------------------------------------------------------------------------------
 class PieceTests(unittest.TestCase):
     def test_boxes(self):
@@ -1331,7 +1701,12 @@ class ContractTests(unittest.TestCase):
     def test_known_model_table_is_well_formed(self):
         for sha, info in KNOWN_MODELS.items():
             self.assertRegex(sha, r"^[0-9a-f]{64}$")
-            self.assertIn(info["kind"], ("face", "object"))
+            self.assertIn(info["kind"], ("face", "object", "text"))
+            self.assertIn(info["license"], ("MIT", "Apache-2.0"))
+        files = {v["file"]: k for k, v in KNOWN_MODELS.items()}
+        for name in ("PP-OCRv6_medium_det.onnx", "PP-OCRv6_medium_rec.onnx", "PP-OCRv6_medium_rec.yml"):
+            self.assertIn(name, files)
+            self.assertEqual(KNOWN_MODELS[files[name]]["kind"], "text")
 
 
 @unittest.skipUnless(OS_DIR and (OS_DIR / "registry" / "conformance.py").is_file(),

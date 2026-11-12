@@ -13,8 +13,8 @@ One document per run of `detection faces`, `detection text` or `detection object
 | `source` | `filename` (bare name), `fingerprint` (`sha256:<hex>` of the file bytes), `size_bytes`, `media_type` (`video` / `image`), `duration` (seconds from ffmpeg-skill `probe`; null for an image), `width`, `height` (display size, rotation applied), `fps` (video) |
 | `frame_size` | `{width, height}`, equal to the source size: every box is in these pixels |
 | `sampling` | `method` (`every` / `at` / `scenes` / `image`), `every` (seconds, for `every`), `times` (the frame times, in order; empty for an image), `scene_points` (for `scenes`: `[{scene, start, end, t}]`, `t` the scene's midpoint), `frames_tool` (`ffmpeg-skill/look`), `ffmpeg_skill_version`, `extracted_size` (size of the PNG frames `look` wrote) |
-| `engine` | `id` (`yunet` / `tesseract` / `yolox`), `kind`, `version` (OpenCV / Tesseract / ONNX Runtime version), `runtime`, `model`, `model_sha256`, `model_license`, `engine_license`, `files` (`[{file, sha256, size_bytes, known, ...}]`, every model file used; `known` says whether the sha256 is in the skill's table), `execution_mode` (`local`), `engine_seconds`, `details` |
-| `parameters` | `min_score`; text: `lang`, `vertical`, `psm`, `level`; objects: `classes` (null = all) |
+| `engine` | `id` (`yunet` / `tesseract` / `yolox`; the optional `ppocrv6` for text and `rfdetr` for objects, ADR-008), `kind`, `version` (OpenCV / Tesseract / ONNX Runtime version), `runtime`, `model`, `model_sha256`, `model_license`, `engine_license`, `files` (`[{file, sha256, size_bytes, known, ...}]`, every model file used; `known` says whether the sha256 is in the skill's table; PP-OCRv6 adds `role`: `det`, `rec`, `dict`), `execution_mode` (`local`), `engine_seconds`, `details` |
+| `parameters` | `min_score`; text: `lang`, `vertical`, `psm`, `level` (`ppocrv6`: `lang: multi`, `vertical: false`, `level: line`, no `psm`); objects: `classes` (null = all) |
 | `frames` | `[{index, t, detections: [...]}]`, strictly increasing `t` (null for an image) |
 | `counts` | `frames`, `frames_with_detections`, `detections` |
 | `skill`, `skill_version`, `tool`, `created_at`, `processing_seconds`, `warnings` | provenance of the run |
@@ -27,15 +27,15 @@ A detection:
 | `kind` | as the document |
 | `box` | `[x, y, w, h]` in source pixels, top-left origin, clipped to the frame, 2 decimals |
 | `box_norm` | `box` divided by `frame_size` (x and w by width, y and h by height), 5 decimals |
-| `score` | 0..1. Faces: YuNet's score. Objects: objectness x class probability. Text: mean Tesseract word confidence / 100 |
-| `label` | face: **null** (a face box is never an identity). text: the OCR text of the line (or word). object: the COCO class name |
-| `lang` | text only: the Tesseract languages used (`jpn+eng`, `jpn_vert+eng`, ...) |
-| `words` | text only: number of words in the line |
+| `score` | 0..1. Faces: YuNet's score. Objects: objectness x class probability (YOLOX), the class's sigmoid (RF-DETR). Text: mean Tesseract word confidence / 100; PP-OCRv6: the recognition score, the mean probability of the decoded characters |
+| `label` | face: **null** (a face box is never an identity). text: the OCR text of the line (or word). object: the COCO class name (the same 80 names for YOLOX and RF-DETR) |
+| `lang` | text only: the Tesseract languages used (`jpn+eng`, `jpn_vert+eng`, ...); `multi` for PP-OCRv6 (one model for its languages, none chosen) |
+| `words` | text only: number of words in the line (PP-OCRv6: whitespace-separated parts, at least 1) |
 | `landmarks` | face only: five points (right eye, left eye, nose tip, right and left mouth corner) in source pixels |
 | `attributes` | face only, with `faces --attributes` (ADR-005): `size` (box height / frame height), `yaw_deg`, `roll_deg`, `frontal` (cos yaw; from the landmarks), `sharpness` (Laplacian variance of the face at 96x96), `mouth_contrast` (gray-level spread around the mouth corners / 128), `eyes_open` (share of edges across the eyes in the eye regions, rescaled: about 0.8 open, 0.2 closed; ADR-007); each null when it could not be measured. Heuristics |
 | `engine`, `model`, `model_sha256` | provenance on every box, equal to the document's `engine` |
 
-For OCR, `model_sha256` is the sha256 over the sorted `file=sha256` lines of the traineddata files used; each file's own sha256 is in `engine.files`, with `variant: tessdata_best` when it matches the skill's table and `unknown (...)` otherwise.
+For OCR, `model_sha256` is the sha256 over the sorted `file=sha256` lines of the traineddata files used (PP-OCRv6: of its detector, recognizer and dictionary files); each file's own sha256 is in `engine.files`, with `variant: tessdata_best` when it matches the skill's table and `unknown (...)` otherwise.
 
 Rules the validator checks: frames in time order inside the duration; boxes inside the frame with positive size; `box_norm = box / frame_size`; scores in [0, 1] and not below `parameters.min_score`; face labels null and no identity keys (`identity`, `name`, `person_id`, `embedding`, ...) on a face; non-empty labels on text and objects; per-box provenance equal to the document's engine; counts; no absolute path, command line or credential anywhere (OCR text in `label` is exempt from the path check: it is what the frame shows).
 
@@ -46,6 +46,8 @@ Rules the validator checks: frames in time order inside the duration; boxes insi
 - **Faces.** YuNet at the frame's own size, plus a second pass downscaled to 640 px on the long side when the frame is larger than 960 px (YuNet finds faces of about 10-300 px), merged by NMS (IoU 0.3).
 - **Text.** One `tesseract` run per frame (`--oem 1`, TSV output), words grouped into lines by Tesseract's block/paragraph/line numbers; no space is kept between two Japanese characters. `--vertical` uses `jpn_vert` and page segmentation mode 5.
 - **Objects.** YOLOX's ONNXRuntime recipe: letterbox to the model's input size (pad 114, BGR, 0-255), grid decode with strides 8/16/32, score = objectness x class probability, class-aware NMS (IoU 0.45).
+- **Text, `--engine ppocrv6` (optional, ADR-008).** PaddleOCR's general OCR pipeline on the official ONNX exports. Detection: the frame in BGR, resized so that its short side is at least 64 px (long side at most 4000 px) with each side rounded to a multiple of 32, (x / 255 - mean) / std with mean (0.485, 0.456, 0.406) and std (0.229, 0.224, 0.225) in B, G, R order, into the DB detector (`x` [N, 3, H, W] -> a text probability map [N, 1, H, W]). Post-processing: map > 0.3; each region's minimum-area rectangle, kept when its mean probability is >= 0.6, grown on each side by area x 1.5 / perimeter (PaddleOCR's unclip), at least 5 px on its shorter side. Recognition: each region cut out with a perspective warp (turned 90 degrees when 1.5 times taller than wide), height 48, aspect kept, (x / 255 - 0.5) / 0.5, zero-padded to at least 320 px (at most 3200), into the CTC recognizer (`x` [N, 3, 48, W] -> character probabilities [N, T, 18710] for the medium model: blank, the 18708 characters of `inference.yml`, space), greedy decoding. The `box` is the axis-aligned box around the region's quadrilateral (a slanted line is over-covered); there is no word level and no vertical mode (`--vertical`, `--psm`, `--lang`, `--level word` are refused with this engine).
+- **Objects, `--engine rfdetr` (optional, ADR-008).** rfdetr's ONNX reference on an export of the official RF-DETR Small (512 x 512) or Medium (576 x 576) COCO weights: the frame resized to the export's input (bilinear, no letterbox), RGB, (x / 255 - mean) / std with ImageNet's mean and std, `input` [1, 3, H, W] -> `dets` [1, Q, 4] (normalised cx, cy, w, h) and `labels` [1, Q, 91] (logits), matched by name. Score = the sigmoid of a class (not a softmax); the Q best query/class pairs are kept, then `--min-score`; no NMS (a set prediction). Slot k is COCO category id k (sparse ids 1-90); the 11 slots without a category are dropped and a file with another number of slots is refused.
 
 ## Tracks (a heuristic)
 

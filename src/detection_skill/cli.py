@@ -5,6 +5,8 @@
   detection text slide.png --lang jpn+eng -o text.json --json              # an image is one frame
   detection text poster.mp4 --at 3,7.5 --vertical -o text.json             # vertical Japanese (jpn_vert)
   detection objects hall.mp4 --every 2 --classes person,laptop -o objects.json
+  detection text slide.png --engine ppocrv6 -o text.json                   # optional engines (ADR-008): PP-OCRv6 for text,
+  detection objects hall.mp4 --engine rfdetr --every 2 -o objects.json     #   RF-DETR for objects; model files user-installed
   detection tracks faces.json -o tracks.json --json                        # boxes linked over time, redact rectangles
   detection shots talk.mp4 -o shots.json --json                            # every frame: cuts and dissolves (PySceneDetect)
   detection reframe tracks.json --aspect 9:16 --shots shots.json -o reframe.json   # a crop window per sample time
@@ -31,7 +33,7 @@ from . import __version__
 from .contract import ERRORS, contract
 from .detections import DETECTIONS_SCHEMA, validate_detections
 from .doctor import doctor
-from .engines import DEFAULT_SHOT_ENGINE, SHOT_ENGINES
+from .engines import DEFAULT_ENGINE, DEFAULT_SHOT_ENGINE, OBJECT_ENGINES, SHOT_ENGINES, TEXT_ENGINES
 from .errors import DetectionError
 from .pii import PII_SCHEMA, make_pii, validate_pii
 from .rank import RANK_SCHEMA, make_rank, validate_rank
@@ -127,7 +129,7 @@ def cmd_detect(a: argparse.Namespace) -> int:
                  models_dir=getattr(a, "models_dir", None), model=getattr(a, "model", None), lang=getattr(a, "lang", None),
                  vertical=getattr(a, "vertical", False), psm=getattr(a, "psm", None), level=getattr(a, "level", "line"),
                  classes=getattr(a, "classes", None), tessdata_dir=getattr(a, "tessdata_dir", None), ffmpeg_skill=a.ffmpeg_skill,
-                 timeout=a.timeout, attributes=getattr(a, "attributes", False))
+                 timeout=a.timeout, attributes=getattr(a, "attributes", False), engine_id=getattr(a, "engine", None))
     if a.output:
         _write_json(a.output, doc)
     c = doc["counts"]
@@ -384,7 +386,11 @@ def parser() -> argparse.ArgumentParser:
                                                              "sharpness, mouth contrast and eyes open (heuristics, ADR-005, "
                                                              "ADR-007)")
 
-    t = _add_detect(sub, "text", "text lines and their OCR text (Tesseract, ja/en)")
+    t = _add_detect(sub, "text", "text lines and their OCR text (Tesseract, ja/en; PP-OCRv6 optional)")
+    t.add_argument("--engine", choices=TEXT_ENGINES, default=DEFAULT_ENGINE["text"],
+                   help="tesseract (default) or ppocrv6 (optional, ADR-008: needs the PP-OCRv6 ONNX files in the models "
+                        "directory; `detection doctor` prints the download commands)")
+    t.add_argument("--models-dir", help="directory with the PP-OCRv6 files (--engine ppocrv6; default: $DETECTION_MODELS_DIR)")
     t.add_argument("--lang", default=None, help="Tesseract languages, e.g. jpn+eng (default), eng, jpn")
     t.add_argument("--vertical", action="store_true", help="vertical Japanese: jpn_vert and page segmentation mode 5")
     t.add_argument("--psm", type=int, help="Tesseract page segmentation mode (default 3; 5 with --vertical; 11 for sparse text)")
@@ -392,9 +398,13 @@ def parser() -> argparse.ArgumentParser:
     t.add_argument("--tessdata-dir", help="directory with jpn/jpn_vert/eng.traineddata (default: $DETECTION_TESSDATA_DIR, "
                                           "else tesseract's own)")
 
-    o = _add_detect(sub, "objects", "object boxes (YOLOX, COCO classes)")
+    o = _add_detect(sub, "objects", "object boxes (YOLOX, COCO classes; RF-DETR optional)")
+    o.add_argument("--engine", choices=OBJECT_ENGINES, default=DEFAULT_ENGINE["object"],
+                   help="yolox (default) or rfdetr (optional, ADR-008: needs an RF-DETR Small / Medium ONNX export, "
+                        "rfdetr-small.onnx or rfdetr-medium.onnx; `detection doctor` prints the export commands)")
     o.add_argument("--classes", action="append", help="only these COCO classes, comma-separated (e.g. person,laptop)")
-    o.add_argument("--models-dir", help="directory with a yolox_*.onnx file (default: $DETECTION_MODELS_DIR)")
+    o.add_argument("--models-dir", help="directory with a yolox_*.onnx file, or rfdetr-*.onnx for --engine rfdetr "
+                                        "(default: $DETECTION_MODELS_DIR)")
     o.add_argument("--model", help="model file name inside the models directory")
 
     tr = sub.add_parser("tracks", help="link a video's boxes over time into tracks and redact rectangles (heuristic)")

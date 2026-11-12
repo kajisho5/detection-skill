@@ -1,6 +1,14 @@
 # Changelog
 
-## Unreleased
+## 0.2.0 - 2026-11-12
+
+Everything below since 0.1.0 (roadmap steps 8-13). Additive: no command, option, output key or default was removed.
+
+- Optional second engines (roadmap step 13, ADR-008), both through ONNX Runtime with no new package (the `[objects]` extra), both opt-in with `--engine`; the defaults stay Tesseract and YOLOX:
+  - `detection text --engine ppocrv6`: PP-OCRv6 (Apache-2.0) text detection + recognition from the official ONNX exports (`PP-OCRv6_medium_det.onnx`, `PP-OCRv6_medium_rec.onnx` and the recognizer's `inference.yml` as `PP-OCRv6_medium_rec.yml`, or the small tier), PaddleOCR's pipeline pre- and post-processing (DB detector, CTC recognizer). One detection per line: the axis-aligned box around the detected quadrilateral, the text, the recognition score, `lang: multi`; every file's sha256 and role in `engine.files`. `--lang`, `--vertical`, `--psm`, `--tessdata-dir` and `--level word` are refused with it. `text` gains `--models-dir`.
+  - `detection objects --engine rfdetr`: RF-DETR Small / Medium (Apache-2.0) from an ONNX export the user makes once with `rfdetr[onnx]` (PyTorch for the export only, never at run time), rfdetr's ONNX decoding (a sigmoid per class, the best query/class pairs, no NMS), COCO's sparse ids mapped to the same 80 names as YOLOX. A file not named `rfdetr-small.onnx` / `rfdetr-medium.onnx` runs with `model_license: unknown (not checked)` and a warning.
+  - `doctor` adds the optional checks `ppocrv6_models` (with `download`, the pinned commands) and `rfdetr_model` (with `export`), and `optional_ready.text_ppocrv6` / `objects_rfdetr`; they never fail doctor. A run without the files exits 3 (`MODEL_NOT_FOUND`) with the same commands as its detail. The contract adds `--engine` to `detection/text` and `detection/objects`, two optional model-weights dependencies, `engines.by_kind` and `engines.optional`; the six PP-OCRv6 medium / small files join `engines.known_model_sha256`.
+  - Tested without the real models: the pieces with stub sessions and the whole engines (worker, ONNX Runtime, document) with tiny synthetic ONNX models written by `tests/tiny_onnx.py`. The real PP-OCRv6 and RF-DETR models are not measured.
 
 - `eyes_open` joins `detection faces --attributes` (roadmap step 12, ADR-007): the share of edges across the eye in both eye regions around YuNet's landmarks, rescaled to 0-1 (about 0.8 open, 0.2 closed); null when the head is rolled over 25 degrees. A heuristic.
 - `detection rank` (roadmap step 12, ADR-007): face detections with attributes -> `detection-skill/face-rank@1` (`schemas/face-rank.schema.json`): frames best first by 0.35 eyes open + 0.25 sharpness + 0.20 frontal + 0.20 size (each part listed, missing parts named), `--top N`, `--all-faces` for group shots; frames without a face last. The contract adds `vision.rank_face_frames` (EXPERIMENTAL); `doctor` adds `ready.rank`.

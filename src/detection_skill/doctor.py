@@ -8,6 +8,8 @@ import sys
 from typing import Any, Dict, Optional
 
 from . import __version__
+from .engines.ppocrv6_engine import DOWNLOAD as PPOCRV6_DOWNLOAD, SOURCE as PPOCRV6_SOURCE
+from .engines.rfdetr_engine import EXPORT as RFDETR_EXPORT, SOURCE as RFDETR_SOURCE
 from .frames import SUPPORTED_MAJORS, VERSION_RANGE, engine_doctor, locate, python_floor
 from .models import (ENV_MODELS_DIR, ENV_TESSDATA_DIR, REQUIRED_LANGS, describe_traineddata, find_tesseract, inspect_models,
                      resolve_models_dir, tessdata_dir, tessdata_langs, tesseract_version)
@@ -85,7 +87,7 @@ def doctor(models_dir: Optional[str] = None, tessdata: Optional[str] = None, ffm
     checks["opencv"] = dict(cv2, used_for="faces (YuNet), image decoding for objects",
                             install=None if cv2["found"] else "pip install 'detection-skill[faces]'  (opencv-python-headless)")
     ort = _pkg("onnxruntime", "onnxruntime")
-    checks["onnxruntime"] = dict(ort, used_for="objects (YOLOX)",
+    checks["onnxruntime"] = dict(ort, used_for="objects (YOLOX); the optional engines TransNetV2, PP-OCRv6 and RF-DETR",
                                  install=None if ort["found"] else "pip install 'detection-skill[objects]'  (onnxruntime)")
     np_ = _pkg("numpy", "numpy")
     checks["numpy"] = dict(np_, install=None if np_["found"] else "installed with the faces / objects extras")
@@ -106,6 +108,16 @@ def doctor(models_dir: Optional[str] = None, tessdata: Optional[str] = None, ffm
     checks["face_model"] = face
     checks["object_model"] = obj
     checks["transnetv2_model"] = shot
+    # Optional engines of ADR-008: reported with the commands that get their files, never a problem.
+    ppocr, rf = models["ppocrv6"], models["rfdetr"]
+    ppocr.update(optional=True, used_for="text --engine ppocrv6 (optional; the default engine, tesseract, needs no model file)",
+                 install=None if ppocr["status"] == "OK" else PPOCRV6_SOURCE,
+                 download=None if ppocr["status"] == "OK" else list(PPOCRV6_DOWNLOAD))
+    rf.update(optional=True, used_for="objects --engine rfdetr (optional; the default engine, YOLOX, has its own file)",
+              install=None if rf["status"] == "OK" else RFDETR_SOURCE,
+              export=None if rf["status"] == "OK" else list(RFDETR_EXPORT))
+    checks["ppocrv6_models"] = ppocr
+    checks["rfdetr_model"] = rf
 
     binary = find_tesseract()
     if not binary:
@@ -146,8 +158,11 @@ def doctor(models_dir: Optional[str] = None, tessdata: Optional[str] = None, ffm
     shots_ok = sd_ok and cv2["found"] and np_["found"]
     ready = {"faces": faces_ok, "text": text_ok, "objects": objects_ok, "shots": shots_ok, "video_frames": ffm_ok,
              "tracks": py_ok, "reframe": py_ok, "speakers": py_ok, "pii": py_ok, "rank": py_ok, "check": py_ok}
-    # Optional engines never fail doctor (ADR-003): TransNetV2 MISSING is reported, `ok` and `ready` do not depend on it.
-    optional_ready = {"shots_transnetv2": ort["found"] and cv2["found"] and np_["found"] and shot["status"] == "OK"}
+    # Optional engines never fail doctor (ADR-003, ADR-008): TransNetV2, PP-OCRv6 and RF-DETR MISSING are reported,
+    # `ok` and `ready` do not depend on them.
+    ort_ok = ort["found"] and cv2["found"] and np_["found"]
+    optional_ready = {"shots_transnetv2": ort_ok and shot["status"] == "OK", "text_ppocrv6": ort_ok and ppocr["status"] == "OK",
+                      "objects_rfdetr": ort_ok and rf["status"] == "OK"}
     problems = [f"{k}: {v['status']}" + (f" ({v.get('detail')})" if v.get("detail") else "")
                 for k, v in checks.items() if v["status"] != "OK" and not v.get("optional")]
     notes = [f"{k}: {v['status']} (optional)" for k, v in checks.items() if v["status"] != "OK" and v.get("optional")]
