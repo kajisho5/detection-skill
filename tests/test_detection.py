@@ -14,7 +14,8 @@ Tests that need more skip with the reason, and run where it is available:
 - the optional engines of ADR-008 (PP-OCRv6, RF-DETR) are tested without their real model files: their pure pieces
   everywhere, their numpy / OpenCV pieces with stub sessions, and the whole engine (worker, onnxruntime, document) with
   tiny synthetic ONNX models written by tests/tiny_onnx.py; they need numpy + OpenCV (+ onnxruntime), which CI's
-  integration job installs. The real PP-OCRv6 and RF-DETR models are not run in this repository.
+  integration job installs. The real PP-OCRv6 and RF-DETR files (and YuNet) run in tests/test_real_models.py, which
+  skips without them and fails instead with DETECTION_REQUIRE_REAL_MODELS=1 (the manual heavy-tests workflow).
 
 Fixture images (tests/fixtures): astronaut.jpg (NASA portrait of Eileen Collins, public domain), chelsea.jpg (CC0),
 coffee.jpg (CC0), all as shipped in scikit-image's data module. Hand-annotated boxes are below (ASTRONAUT_FACE etc.).
