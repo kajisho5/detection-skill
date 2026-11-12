@@ -1,0 +1,134 @@
+# The real-model tests, manual trigger only: the optional engines of ADR-008 (PP-OCRv6 medium, RF-DETR Small) and YuNet
+# on their real model files. `rfdetr_export` installs rfdetr on the CPU build of PyTorch and runs the export commands
+# `detection doctor` prints, as printed (PyTorch is in this job only). `real_models` installs the skill without
+# PyTorch, runs the PP-OCRv6 download commands `doctor` prints (revisions pinned in the engine), fetches YuNet, checks
+# every file against its sha256, takes the export from the first job and runs tests/test_real_models.py with
+# DETECTION_REQUIRE_REAL_MODELS=1: a missing piece fails, no test may skip. Kept out of tests.yml, so a pull request
+# never spends minutes or bandwidth on it. Run from the Actions tab or `gh workflow run heavy-tests.yml --ref <branch>`.
+name: heavy tests
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: heavy-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rfdetr_export:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Make room for PyTorch
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+      - name: The CPU build of PyTorch first, so the documented `pip install` adds no CUDA wheels
+        run: pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cpu
+      - run: pip install --no-cache-dir -e .
+      - name: The export commands `detection doctor` prints, run as printed
+        env:
+          DETECTION_MODELS_DIR: ${{ runner.temp }}/models
+        run: |
+          mkdir -p "$DETECTION_MODELS_DIR" "$RUNNER_TEMP/export"
+          detection doctor --json > "$RUNNER_TEMP/doctor.json" || true
+          python -c "import json, sys; print('\n'.join(json.load(open(sys.argv[1]))['checks']['rfdetr_model']['export']))" \
+            "$RUNNER_TEMP/doctor.json" > "$RUNNER_TEMP/export.sh"
+          cat "$RUNNER_TEMP/export.sh"
+          cd "$RUNNER_TEMP/export"
+          bash -euxo pipefail "$RUNNER_TEMP/export.sh"
+          ls -la "$RUNNER_TEMP/export/rfdetr-export" "$DETECTION_MODELS_DIR"
+          pip show rfdetr torch onnx | grep -E "^(Name|Version):"
+          echo "rfdetr-small.onnx: \`$(sha256sum "$DETECTION_MODELS_DIR/rfdetr-small.onnx" | cut -d' ' -f1)\`, $(stat -c %s "$DETECTION_MODELS_DIR/rfdetr-small.onnx") bytes" | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rfdetr-small-onnx
+          path: ${{ runner.temp }}/models/rfdetr-small.onnx
+          if-no-files-found: error
+          retention-days: 3
+
+  real_models:
+    needs: rfdetr_export
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      DETECTION_REQUIRE_REAL_MODELS: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Fonts for the rendered slides (Japanese and Latin)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends fonts-noto-cjk fonts-dejavu-core
+      - run: pip install --no-cache-dir -e '.[faces,objects]' pillow
+      - name: No PyTorch here (both optional engines run on the objects extra alone)
+        run: python -c "import importlib.util, sys; sys.exit(importlib.util.find_spec('torch') is not None)"
+      - name: The PP-OCRv6 download commands `detection doctor` prints, run as printed; YuNet; every sha256 checked
+        env:
+          DETECTION_MODELS_DIR: ${{ runner.temp }}/models
+        run: |
+          mkdir -p "$DETECTION_MODELS_DIR"
+          detection doctor --json > "$RUNNER_TEMP/doctor.json" || true
+          python -c "import json, sys; print('\n'.join(json.load(open(sys.argv[1]))['checks']['ppocrv6_models']['download']))" \
+            "$RUNNER_TEMP/doctor.json" > "$RUNNER_TEMP/download.sh"
+          cat "$RUNNER_TEMP/download.sh"
+          bash -euxo pipefail "$RUNNER_TEMP/download.sh"
+          cd "$DETECTION_MODELS_DIR"
+          curl -fsSL --retry 3 -o face_detection_yunet_2026may.onnx \
+            https://media.githubusercontent.com/media/opencv/opencv_zoo/main/models/face_detection_yunet/face_detection_yunet_2026may.onnx
+          printf '%s  %s\n' \
+            eb13b44b25bb36f89528b68720af8a61d9cf381176107f465db1757b65d086e1 PP-OCRv6_medium_det.onnx \
+            9c09abf0957f7968c7586464b7397b84ad2387a0497a351af40e9acc71b673ba PP-OCRv6_medium_rec.onnx \
+            991b700facf5b50a7de193468207d5f4255b538dde0d312ae3b7c7a9b6873129 PP-OCRv6_medium_rec.yml \
+            ebafce4e3c118d6554634be5c27ab333b4c047a9a8c3faf1d7cf93101c22f0f0 face_detection_yunet_2026may.onnx | sha256sum -c -
+      - uses: actions/download-artifact@v4
+        with:
+          name: rfdetr-small-onnx
+          path: ${{ runner.temp }}/models
+      - name: doctor reports both optional engines ready
+        env:
+          DETECTION_MODELS_DIR: ${{ runner.temp }}/models
+        run: |
+          detection doctor --json > doctor.json || true
+          python - doctor.json <<'EOF'
+          import json, sys
+          d = json.load(open(sys.argv[1]))
+          c = d["checks"]
+          assert d["optional_ready"]["text_ppocrv6"] and d["optional_ready"]["objects_rfdetr"], d["optional_ready"]
+          assert d["ready"]["faces"], d["problems"]
+          p = c["ppocrv6_models"]
+          assert (p["status"], p["tier"]) == ("OK", "medium") and all(f["known"] for f in p["files"]), p
+          assert c["rfdetr_model"]["status"] == "OK" and c["rfdetr_model"]["file"] == "rfdetr-small.onnx", c["rfdetr_model"]
+          print(json.dumps({"optional_ready": d["optional_ready"], "ppocrv6": [(f["file"], f["known"]) for f in p["files"]],
+                            "rfdetr": c["rfdetr_model"]["sha256"]}, indent=1))
+          EOF
+      - name: Real-model tests (none may skip)
+        env:
+          DETECTION_MODELS_DIR: ${{ runner.temp }}/models
+          DETECTION_REAL_MODELS_SUMMARY: ${{ runner.temp }}/summary.md
+        run: |
+          set -o pipefail
+          python -m unittest -v tests/test_real_models.py 2>&1 | tee test.log
+          ! grep -E "\.\.\. skipped" test.log
+          for t in test_english_slide test_japanese_slide test_blank_frame_has_no_text test_fixture_recall \
+                   test_boxes_in_a_wide_frame test_classes_filter test_blank_frame_has_no_object test_fixture_face_and_landmarks; do
+            grep -E "^$t .*\.\.\. ok$" test.log || { echo "::error::$t did not run and pass"; exit 1; }
+          done
+      - name: The CLI on the fixtures (RF-DETR, YuNet), checked
+        env:
+          DETECTION_MODELS_DIR: ${{ runner.temp }}/models
+        run: |
+          detection objects tests/fixtures/astronaut.jpg --engine rfdetr -o objects.json --json > /dev/null
+          detection check objects.json --json
+          detection faces tests/fixtures/astronaut.jpg -o faces.json --json > /dev/null
+          detection check faces.json --json
+      - name: Measured (job summary)
+        if: always()
+        run: |
+          { echo "### Real models (ubuntu-24.04 CPU)"; echo; cat "$RUNNER_TEMP/summary.md" 2>/dev/null || echo "no measurements"; } >> "$GITHUB_STEP_SUMMARY"

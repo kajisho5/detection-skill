@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.1 - 2026-11-12
+
+Fixes and tests; no command, option, output key or default changed.
+
+- `tests/test_real_models.py` and the manual workflow `.github/workflows/heavy-tests.yml` (`workflow_dispatch` only, never on a pull request): PP-OCRv6 medium (the files fetched with the download commands `doctor` prints, sha256 checked), RF-DETR Small (exported with the commands `doctor` prints; PyTorch only in the export job) and YuNet on real model files: rendered English and Japanese slides (CER, line boxes), the three fixture photos and a 1280x720 frame with two of them at known places (IoU), the portrait's face and landmarks. They skip without the files; `DETECTION_REQUIRE_REAL_MODELS=1` (set by the workflow) makes a missing piece fail. The integration job lets only these skips through.
+- The commands `doctor` prints (PP-OCRv6 `download`, RF-DETR `export`, the same in the contract's `get` and in `MODEL_NOT_FOUND` details) stop when `$DETECTION_MODELS_DIR` is unset, instead of downloading into the current directory or copying to `/`; the README runs them as one `&&` chain, so a failed `cd` downloads nothing.
+- SKILL.md: run the optional engines when `doctor --json` shows `optional_ready.text_ppocrv6` / `objects_rfdetr` true (the files and ONNX Runtime), not only the file check.
+- Licence notes: RF-DETR Nano and Large are Apache-2.0 too (the skill still looks for Small and Medium only); Atto, Femto, Pico, XL and 2XL are under the Roboflow PML 1.0.
+
 ## 0.2.0 - 2026-11-12
 
 Everything below since 0.1.0 (roadmap steps 8-13). Additive: no command, option, output key or default was removed.

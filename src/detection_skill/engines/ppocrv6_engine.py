@@ -55,7 +55,7 @@ _HF = "https://huggingface.co/PaddlePaddle"
 DET_REVISION = "61323801669c338b7891481ec7bac61ce31b576a"   # PP-OCRv6_medium_det_onnx
 REC_REVISION = "50c7eacafc52fa7bcf4194e8cd08e46f8558504b"   # PP-OCRv6_medium_rec_onnx
 DOWNLOAD = (
-    f'cd "${ENV_MODELS_DIR}"',
+    f'cd "${{{ENV_MODELS_DIR}:?set {ENV_MODELS_DIR} to the models directory}}"',
     f"curl -fL -o PP-OCRv6_medium_det.onnx {_HF}/PP-OCRv6_medium_det_onnx/resolve/{DET_REVISION}/inference.onnx",
     f"curl -fL -o PP-OCRv6_medium_rec.onnx {_HF}/PP-OCRv6_medium_rec_onnx/resolve/{REC_REVISION}/inference.onnx",
     f"curl -fL -o PP-OCRv6_medium_rec.yml {_HF}/PP-OCRv6_medium_rec_onnx/resolve/{REC_REVISION}/inference.yml",
