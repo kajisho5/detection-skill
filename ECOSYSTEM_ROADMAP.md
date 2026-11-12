@@ -5,7 +5,7 @@ Written from a read-only audit of this repository on 2026-10-30. Each step below
 
 ## Where it stands
 
-Early (0.2.0). FACES (YuNet), TEXT (Tesseract, ja/en, vertical; PP-OCRv6 optional) and OBJECTS (YOLOX; RF-DETR Small / Medium optional) write `detection-skill/detections@1` from ffmpeg-skill frames or an image; TRACKS links boxes into redact-ready rectangles (a heuristic); SHOTS writes the frame-accurate shot list (`detection-skill/shots@1`, PySceneDetect, TransNetV2 optional), REFRAME a crop window per time for 9:16 / 1:1 / 4:5 (`detection-skill/reframe@1`, a heuristic), SPEAKERS a multicam switch list to whoever speaks (`detection-skill/speakers@1`, mouth motion or diarization turns, a heuristic), PII personal / patient data on slides as CONFIRM proposals (`detection-skill/pii@1`, patterns per locale), and RANK frames for a thumbnail by eyes open, sharpness, frontal angle and size (`detection-skill/face-rank@1`, a heuristic). Contract and doctor in the OS shape. Measured on synthetic fixtures only; real event footage is not measured yet, and the optional PP-OCRv6 and RF-DETR engines are not measured at all (no real model files in CI).
+Early (0.2.2). FACES (YuNet), TEXT (Tesseract, ja/en, vertical; PP-OCRv6 optional) and OBJECTS (YOLOX; RF-DETR Small / Medium optional) write `detection-skill/detections@1` from ffmpeg-skill frames or an image; TRACKS links boxes into redact-ready rectangles (a heuristic); SHOTS writes the frame-accurate shot list (`detection-skill/shots@1`, PySceneDetect, TransNetV2 optional), REFRAME a crop window per time for 9:16 / 1:1 / 4:5 (`detection-skill/reframe@1`, a heuristic), SPEAKERS a multicam switch list to whoever speaks (`detection-skill/speakers@1`, mouth motion or diarization turns, a heuristic), PII personal / patient data on slides as CONFIRM proposals (`detection-skill/pii@1`, patterns per locale), and RANK frames for a thumbnail by eyes open, sharpness, frontal angle and size (`detection-skill/face-rank@1`, a heuristic). Contract and doctor in the OS shape. Measured on synthetic fixtures only; real event footage is not measured yet, and the optional PP-OCRv6 and RF-DETR engines are not measured at all (no real model files in CI).
 
 ## What this repository owns
 
@@ -16,6 +16,7 @@ Early (0.2.0). FACES (YuNet), TEXT (Tesseract, ja/en, vertical; PP-OCRv6 optiona
 | 顔検出 | partial | `detection faces` (0.1.0, YuNet); fixture recall 5/5, real footage unmeasured |
 | 文字検出(OCR) | partial | `detection text` (0.1.0, Tesseract jpn/jpn_vert/eng; images accepted for slide-sync / stepcap; 0.2.0: `--engine ppocrv6` optional, unmeasured); stepcap and slide-sync not wired yet |
 | 物体検出 | partial | `detection objects` (0.1.0, YOLOX ONNX, COCO 80; 0.2.0: `--engine rfdetr` optional, RF-DETR S/M export, unmeasured) |
+| ショット検出 | done | `detection shots` (step 8): the frame-accurate shot table; added by the [Velisa ownership decisions 2026-11-12](https://github.com/kajisho5/Velisa/blob/main/docs/ecosystem/DECISION_LOG.md) |
 
 ## Wiring
 
@@ -55,6 +56,12 @@ Frames come from ffmpeg-skill `probe` / `scenes` / `look --no-timecode --width <
 - [x] **13. Optional second engines for text and objects** — PP-OCRv6 (Apache-2.0, the official ONNX exports) as `text --engine ppocrv6` and RF-DETR Small / Medium (Apache-2.0, an ONNX export the user makes once with the rfdetr package) as `objects --engine rfdetr`, through ONNX Runtime with no new package; defaults unchanged; doctor reports both as optional with the download / export commands (Done (ADR-008), [#15](https://github.com/kajisho5/detection-skill/pull/15), in 0.2.0: licence, ONNX availability, languages, input preprocessing and output format verified on the upstream pages and recorded in the ADR; results map onto `detections@1` with every model file's sha256; tested with stub sessions and tiny synthetic ONNX models, the real models unmeasured)
   - Needs: step 1 (ADR-001's follow-ups: a second OCR backend, a transformer detector with a confirmed weight licence)
   - Done when: both engines run end to end through the worker on synthetic ONNX models, a missing file exits 3 with the commands that get it, doctor and the defaults are unchanged; next, a CER / recall comparison on the real files
+- [ ] **14. (agent side) `shots` and `text` wired** — the agent adds `detection/shots` for its edit view and replaces its `visual_detection` handoff with `detection/text` ([Velisa ownership decisions 2026-11-12](https://github.com/kajisho5/Velisa/blob/main/docs/ecosystem/DECISION_LOG.md))
+  - Done when: tracked in video-production-agent (step 33)
+
+## Boundaries
+
+Cut detection is layered, not a collision ([Velisa ownership decisions 2026-11-12](https://github.com/kajisho5/Velisa/blob/main/docs/ecosystem/DECISION_LOG.md)): the fast list is ffmpeg-skill `scenes`, the observation is media-analysis-skill `scene_detection`, the frame-accurate shot table is this repository's `shots` (ショット検出), judgement only is qc-skill, and slide changes are slide-sync-skill's. OCR is this repository's only (`text`).
 
 ---
 Engine for every media operation: [ffmpeg-skill](https://github.com/kajisho5/ffmpeg-skill) (3.x, 42 tools, contract_version 2.0; treated as complete, proposals go to Velisa's ROADMAP). Orchestrator: [video-production-agent](https://github.com/kajisho5/video-production-agent).
