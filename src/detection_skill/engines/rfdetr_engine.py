@@ -46,7 +46,7 @@ RFDETR_VERSION = "1.12.0"
 EXPORT = (
     f'pip install "rfdetr[onnx]=={RFDETR_VERSION}"',
     "python -c \"from rfdetr import RFDETRSmall; RFDETRSmall().export(output_dir='rfdetr-export')\"",
-    f'cp rfdetr-export/rfdetr-small.onnx "${ENV_MODELS_DIR}/"',
+    f'cp rfdetr-export/rfdetr-small.onnx "${{{ENV_MODELS_DIR}:?set {ENV_MODELS_DIR} to the models directory}}/"',
 )
 SOURCE = ("optional (detection objects --engine rfdetr): RF-DETR Small or Medium (code and weights Apache-2.0, "
           "https://github.com/roboflow/rf-detr) has no published ONNX file; export it once with the rfdetr package, in any "
@@ -147,7 +147,8 @@ class RfdetrEngine(DetectionEngine):
         else:
             license_ = "unknown (not checked)"
             warnings.append(f"model {d['file']} is not rfdetr-small.onnx or rfdetr-medium.onnx: its weights' licence is not "
-                            "checked (RF-DETR Atto, Femto, Pico, XL and 2XL are under the Roboflow PML 1.0, not Apache-2.0)")
+                            "checked (RF-DETR Nano and Large are Apache-2.0 too; Atto, Femto, Pico, XL and 2XL are under "
+                            "the Roboflow PML 1.0, not Apache-2.0)")
         model_name = known.get("model") or {"rfdetr-small.onnx": "RF-DETR Small (COCO, ONNX export)",
                                             "rfdetr-medium.onnx": "RF-DETR Medium (COCO, ONNX export)"}.get(d["file"], d["file"])
         return Prepared(model=model_name, model_sha256=d["sha256"], files=[d], license=license_, version=_ort_version(),

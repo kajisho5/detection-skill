@@ -27,7 +27,8 @@ jobs:
     # Every real engine runs here: ffmpeg + Tesseract (jpn, jpn_vert, eng) + a Japanese font from apt, OpenCV,
     # ONNX Runtime and PySceneDetect (shots) from pip, the YuNet and YOLOX-Nano model files fetched by this job (pinned by sha256; the skill
     # itself never downloads anything), and read-only checkouts of ffmpeg-skill (frames) and Velisa (the OS)
-    # (registry conformance). No test may skip. TransNetV2 (optional shot engine) has no weights here on purpose:
+    # (registry conformance). No test may skip, except the PP-OCRv6 and RF-DETR real-model tests, which run only in the
+    # manual heavy-tests.yml (their skip reason says so). TransNetV2 (optional shot engine) has no weights here on purpose:
     # doctor must report it MISSING and still pass. ffmpeg-skill runs at both ends of the supported range
     # (>=2.0.0 <4.0.0, ADR-002): the last 2.x tag and v3.0.0, on Ubuntu 24.04's FFmpeg 6.1 and Python 3.12.
     name: integration (ffmpeg-skill ${{ matrix.ffmpeg_skill }})
@@ -73,7 +74,9 @@ jobs:
         run: |
           set -o pipefail
           python -m unittest discover -s tests -v 2>&1 | tee test.log
-          if grep '\.\.\. skipped' test.log; then echo "real-engine tests were skipped"; exit 1; fi
+          if grep '\.\.\. skipped' test.log | grep -v "skipped 'real model, heavy-tests.yml only: "; then
+            echo "real-engine tests were skipped"; exit 1
+          fi
       - name: doctor (all engines ready)
         env:
           DETECTION_MODELS_DIR: ${{ runner.temp }}/models

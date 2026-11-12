@@ -1430,6 +1430,24 @@ class PPOCRv6Tests(TmpCase):
         self.assertIsNone(pc["install"])
         self.assertEqual(doctor(models_dir=m)["optional_ready"]["text_ppocrv6"], HAVE_CV2 and HAVE_ORT)
 
+    def test_printed_commands_refuse_an_unset_models_dir(self):
+        # `cd ""` succeeds and stays put, and "$DIR/" becomes "/": with $DETECTION_MODELS_DIR unset the commands doctor
+        # prints (PP-OCRv6 download, RF-DETR export) must stop instead of writing into the current directory or "/"
+        for cmd in ppocr.DOWNLOAD + rfd.EXPORT:
+            if "DETECTION_MODELS_DIR" in cmd:
+                self.assertIn('"${DETECTION_MODELS_DIR:?', cmd)
+                self.assertNotIn('"$DETECTION_MODELS_DIR', cmd)
+        self.assertIn(" && ".join(ppocr.DOWNLOAD), ppocr.SOURCE)       # one chain: a failed cd stops the downloads
+        self.assertIn(" && ".join(rfd.EXPORT), rfd.SOURCE)
+        bash = shutil.which("bash")
+        if bash and os.name != "nt":
+            env = {k: v for k, v in os.environ.items() if k != "DETECTION_MODELS_DIR"}
+            for cmd in (ppocr.DOWNLOAD[0], rfd.EXPORT[2]):
+                p = subprocess.run([bash, "-c", cmd], cwd=self.tmp, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                   text=True)
+                self.assertNotEqual(p.returncode, 0, cmd)
+                self.assertIn("set DETECTION_MODELS_DIR", p.stderr)
+
     def test_tesseract_stays_the_default(self):
         img = os.path.join(self.tmp, "a.png")
         write_png(img, 64, 64)

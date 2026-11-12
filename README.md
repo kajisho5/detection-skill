@@ -46,7 +46,7 @@ detection speakers --camera camA_tracks.json --camera camB_tracks.json -o speake
 | Text: Tesseract 5 | the `tesseract` binary: `apt install tesseract-ocr tesseract-ocr-jpn tesseract-ocr-jpn-vert`, `brew install tesseract tesseract-lang`, or `choco install tesseract` | `jpn.traineddata`, `jpn_vert.traineddata`, `eng.traineddata` from [tessdata_best](https://github.com/tesseract-ocr/tessdata_best), **Apache-2.0**, in a directory set as `--tessdata-dir` / `$DETECTION_TESSDATA_DIR`. Without it, Tesseract's own data is used (on Ubuntu, the `tessdata` variant from apt) and every result says which variant it was |
 | Objects: YOLOX | `pip install -e '.[objects]'` (onnxruntime, opencv-python-headless) | a YOLOX ONNX file from the [YOLOX releases](https://github.com/Megvii-BaseDetection/YOLOX/releases) (e.g. `yolox_s.onnx`, or `yolox_nano.onnx` for speed), **Apache-2.0**, in `$DETECTION_MODELS_DIR`. COCO's 80 classes |
 | Text, optional: PP-OCRv6 (`text --engine ppocrv6`) | `pip install -e '.[objects]'` (onnxruntime, opencv-python-headless); no new package | three files in `$DETECTION_MODELS_DIR`, **Apache-2.0**: the official ONNX exports of [PP-OCRv6_medium_det](https://huggingface.co/PaddlePaddle/PP-OCRv6_medium_det_onnx) and [PP-OCRv6_medium_rec](https://huggingface.co/PaddlePaddle/PP-OCRv6_medium_rec_onnx) (both named `inference.onnx` there) and the recognizer's `inference.yml` (its character dictionary), saved as `PP-OCRv6_medium_det.onnx`, `PP-OCRv6_medium_rec.onnx`, `PP-OCRv6_medium_rec.yml` (the commands below; the `small` tier under the same names also works). About 139 MB |
-| Objects, optional: RF-DETR (`objects --engine rfdetr`) | `pip install -e '.[objects]'`; no new package (no PyTorch) | no ONNX file is published: export the official COCO weights once with the `rfdetr` package (PyTorch is needed for the export only, in any environment with Python 3.10+) and save `rfdetr-small.onnx` or `rfdetr-medium.onnx` in `$DETECTION_MODELS_DIR` (the commands below). **Apache-2.0** (RF-DETR Small and Medium; other sizes are under other terms and are not checked) |
+| Objects, optional: RF-DETR (`objects --engine rfdetr`) | `pip install -e '.[objects]'`; no new package (no PyTorch) | no ONNX file is published: export the official COCO weights once with the `rfdetr` package (PyTorch is needed for the export only, in any environment with Python 3.10+) and save `rfdetr-small.onnx` or `rfdetr-medium.onnx` in `$DETECTION_MODELS_DIR` (the commands below). **Apache-2.0** (RF-DETR Small and Medium, the two sizes the skill looks for and records as Apache-2.0; Nano and Large are Apache-2.0 too, Atto, Femto, Pico, XL and 2XL are under the Roboflow PML 1.0. A file under another name runs with `model_license: unknown (not checked)` and a warning) |
 | Shots: PySceneDetect | `pip install -e '.[shots]'` (scenedetect `>=0.6.7 <0.7`, opencv-python-headless) | none. Optional `--engine transnetv2`: an ONNX export of [TransNetV2](https://github.com/soCzech/TransNetV2) (code and weights **MIT**) as `transnetv2.onnx` in `$DETECTION_MODELS_DIR`, run by ONNX Runtime (`[objects]`); `doctor` reports it `MISSING` (optional) until then |
 | Frames of a video | [ffmpeg-skill](https://github.com/kajisho5/ffmpeg-skill) 2.x or 3.x and FFmpeg (3.x needs Python 3.10+ and FFmpeg 6.1+) | `git clone https://github.com/kajisho5/ffmpeg-skill ~/.claude/skills/ffmpeg-skill`, or `--ffmpeg-skill` / `$DETECTION_FFMPEG_SKILL_DIR` |
 
@@ -67,18 +67,20 @@ Model files are identified by sha256, measured on every run and written into eve
 The PP-OCRv6 files, pinned to the revisions above (about 62 MB + 77 MB; the skill itself never downloads; `detection doctor` prints the same commands):
 
 ```bash
-cd "$DETECTION_MODELS_DIR"
-curl -fL -o PP-OCRv6_medium_det.onnx https://huggingface.co/PaddlePaddle/PP-OCRv6_medium_det_onnx/resolve/61323801669c338b7891481ec7bac61ce31b576a/inference.onnx
-curl -fL -o PP-OCRv6_medium_rec.onnx https://huggingface.co/PaddlePaddle/PP-OCRv6_medium_rec_onnx/resolve/50c7eacafc52fa7bcf4194e8cd08e46f8558504b/inference.onnx
-curl -fL -o PP-OCRv6_medium_rec.yml https://huggingface.co/PaddlePaddle/PP-OCRv6_medium_rec_onnx/resolve/50c7eacafc52fa7bcf4194e8cd08e46f8558504b/inference.yml
+cd "${DETECTION_MODELS_DIR:?set DETECTION_MODELS_DIR to the models directory}" &&
+  curl -fL -o PP-OCRv6_medium_det.onnx https://huggingface.co/PaddlePaddle/PP-OCRv6_medium_det_onnx/resolve/61323801669c338b7891481ec7bac61ce31b576a/inference.onnx &&
+  curl -fL -o PP-OCRv6_medium_rec.onnx https://huggingface.co/PaddlePaddle/PP-OCRv6_medium_rec_onnx/resolve/50c7eacafc52fa7bcf4194e8cd08e46f8558504b/inference.onnx &&
+  curl -fL -o PP-OCRv6_medium_rec.yml https://huggingface.co/PaddlePaddle/PP-OCRv6_medium_rec_onnx/resolve/50c7eacafc52fa7bcf4194e8cd08e46f8558504b/inference.yml
 ```
+
+One `&&` chain: if the `cd` fails (the variable unset or the directory missing), nothing is downloaded into the current directory.
 
 An RF-DETR export, once, in any environment with Python 3.10+ (it installs PyTorch there; this skill never imports it). `RFDETRSmall()` fetches the official COCO weights, `export()` writes `rfdetr-small.onnx` (`RFDETRMedium` writes `rfdetr-medium.onnx`):
 
 ```bash
-pip install "rfdetr[onnx]==1.12.0"
-python -c "from rfdetr import RFDETRSmall; RFDETRSmall().export(output_dir='rfdetr-export')"
-cp rfdetr-export/rfdetr-small.onnx "$DETECTION_MODELS_DIR/"
+pip install "rfdetr[onnx]==1.12.0" &&
+  python -c "from rfdetr import RFDETRSmall; RFDETRSmall().export(output_dir='rfdetr-export')" &&
+  cp rfdetr-export/rfdetr-small.onnx "${DETECTION_MODELS_DIR:?set DETECTION_MODELS_DIR to the models directory}/"
 ```
 
 An export has no fixed sha256 (it is made by you), so it runs with its measured sha256 recorded and a warning.
@@ -147,4 +149,4 @@ Fixture images: `tests/fixtures/astronaut.jpg` (NASA portrait of Eileen Collins,
 
 ## License
 
-The code is MIT (see `LICENSE`). Model files are not part of this repository and keep their own licences: YuNet (MIT), Tesseract and tessdata (Apache-2.0), YOLOX (Apache-2.0), TransNetV2 (MIT), PP-OCRv6 (Apache-2.0), RF-DETR Small and Medium (Apache-2.0). PySceneDetect is BSD-3-Clause.
+The code is MIT (see `LICENSE`). Model files are not part of this repository and keep their own licences: YuNet (MIT), Tesseract and tessdata (Apache-2.0), YOLOX (Apache-2.0), TransNetV2 (MIT), PP-OCRv6 (Apache-2.0), RF-DETR (Nano, Small, Medium and Large are Apache-2.0; the skill looks for Small and Medium; Atto, Femto, Pico, XL and 2XL are under the Roboflow PML 1.0). PySceneDetect is BSD-3-Clause.
