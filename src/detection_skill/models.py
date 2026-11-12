@@ -35,8 +35,9 @@ SHOT_MODEL_PREFIX = "transnetv2"
 PPOCRV6_TIERS = ("medium", "small")
 PPOCRV6_ROLES = ("det", "rec", "dict")
 # Optional (ADR-008): RF-DETR Small / Medium, exported to ONNX by the user (`rfdetr[onnx]`, see README); the names the
-# export writes. Only these two are looked for and recorded as Apache-2.0 (Nano and Large are Apache-2.0 too but are not
-# looked for; Atto, Femto, Pico, XL and 2XL are under the Roboflow PML 1.0).
+# export writes, preferred in this order and the only two recorded as Apache-2.0 (Nano and Large are Apache-2.0 too;
+# Atto, Femto, Pico, XL and 2XL are under the Roboflow PML 1.0). Without either, another rfdetr*.onnx is picked and runs
+# with model_license "unknown (not checked)" and a warning (RfdetrEngine.prepare).
 RFDETR_MODEL_PREFERENCE = ("rfdetr-small.onnx", "rfdetr-medium.onnx")
 RFDETR_MODEL_PREFIX = "rfdetr"
 

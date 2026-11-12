@@ -115,7 +115,7 @@ jobs:
         run: |
           set -o pipefail
           python -m unittest -v tests/test_real_models.py 2>&1 | tee test.log
-          ! grep -E "\.\.\. skipped" test.log
+          if grep -E "\.\.\. skipped" test.log; then echo "::error::a real-model test skipped"; exit 1; fi
           for t in test_english_slide test_japanese_slide test_blank_frame_has_no_text test_fixture_recall \
                    test_boxes_in_a_wide_frame test_classes_filter test_blank_frame_has_no_object test_fixture_face_and_landmarks; do
             grep -E "^$t .*\.\.\. ok$" test.log || { echo "::error::$t did not run and pass"; exit 1; }

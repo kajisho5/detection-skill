@@ -247,6 +247,8 @@ class RealYunetTests(td.TmpCase):
 
 
 def tearDownModule():
+    if MEASURED:
+        print()
     for line in MEASURED:
         print(f"  measured: {line}")
 

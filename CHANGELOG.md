@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.2 - 2026-11-12
+
+Fixes; no command, option, output key or default changed.
+
+- First run of `heavy-tests.yml` on the real files: all 8 real-model tests pass, no defect in PP-OCRv6 or RF-DETR pre- or post-processing, class mapping or box coordinates. Measured: PP-OCRv6 medium English / Japanese CER 0.000 on rendered slides; RF-DETR Small person / cat / cup IoU 0.97 / 0.97 / 0.98 (README "Measured here", ADR-008).
+- The RF-DETR `export` commands (doctor, contract `get`, `MODEL_NOT_FOUND` detail, README) check `$DETECTION_MODELS_DIR` first, before PyTorch is installed.
+- `heavy-tests.yml` fails on any skipped test explicitly; doc comments say which RF-DETR file is picked when neither preferred name is there.
+
 ## 0.2.1 - 2026-11-12
 
 Fixes and tests; no command, option, output key or default changed.
