@@ -44,6 +44,7 @@ MEAN, STD = (0.485, 0.456, 0.406), (0.229, 0.224, 0.225)
 INSTALL = "pip install 'detection-skill[objects]'  (onnxruntime, opencv-python-headless)"
 RFDETR_VERSION = "1.12.0"
 EXPORT = (
+    f'test -d "${{{ENV_MODELS_DIR}:?set {ENV_MODELS_DIR} to the models directory}}"',   # before PyTorch is installed
     f'pip install "rfdetr[onnx]=={RFDETR_VERSION}"',
     "python -c \"from rfdetr import RFDETRSmall; RFDETRSmall().export(output_dir='rfdetr-export')\"",
     f'cp rfdetr-export/rfdetr-small.onnx "${{{ENV_MODELS_DIR}:?set {ENV_MODELS_DIR} to the models directory}}/"',

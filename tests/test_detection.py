@@ -1440,10 +1440,11 @@ class PPOCRv6Tests(TmpCase):
                 self.assertNotIn('"$DETECTION_MODELS_DIR', cmd)
         self.assertIn(" && ".join(ppocr.DOWNLOAD), ppocr.SOURCE)       # one chain: a failed cd stops the downloads
         self.assertIn(" && ".join(rfd.EXPORT), rfd.SOURCE)
+        self.assertIn("DETECTION_MODELS_DIR", rfd.EXPORT[0])            # checked before PyTorch is installed
         bash = shutil.which("bash")
         if bash and os.name != "nt":
             env = {k: v for k, v in os.environ.items() if k != "DETECTION_MODELS_DIR"}
-            for cmd in (ppocr.DOWNLOAD[0], rfd.EXPORT[2]):
+            for cmd in [c for c in ppocr.DOWNLOAD + rfd.EXPORT if "DETECTION_MODELS_DIR" in c]:
                 p = subprocess.run([bash, "-c", cmd], cwd=self.tmp, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                    text=True)
                 self.assertNotEqual(p.returncode, 0, cmd)
