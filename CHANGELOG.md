@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.3 - 2026-11-13
+
+Contract shape only; no command, option, output document, tool, capability id or default changed. `contract_version` stays 1.0.
+
+- The contract follows the OS contract shape (Velisa `registry/capability_contract.schema.json`, ADR-009): `skill` is `{id, package, version}` instead of the package name as a string, and `dependencies` lists only ffmpeg-skill, with `skill_id` added (`id`, `kind`, `version_range` and the rest stay). OpenCV, PySceneDetect, ONNX Runtime, Tesseract and the model files leave `dependencies`; `doctor` reports each with its version, licence and install line, as before.
+
 ## 0.2.2 - 2026-11-12
 
 Fixes; no command, option, output key or default changed.

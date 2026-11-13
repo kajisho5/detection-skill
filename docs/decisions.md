@@ -278,3 +278,28 @@ ADR-001 chose one engine per task and left Tesseract's Japanese screen-text accu
 - PaddleX: [`configs/pipelines/OCR.yaml`](https://github.com/PaddlePaddle/PaddleX/blob/develop/paddlex/configs/pipelines/OCR.yaml), [`text_detection/processors.py`](https://github.com/PaddlePaddle/PaddleX/blob/develop/paddlex/inference/models/text_detection/processors.py), [`text_recognition/processors.py`](https://github.com/PaddlePaddle/PaddleX/blob/develop/paddlex/inference/models/text_recognition/processors.py), [`crop_image_regions.py`](https://github.com/PaddlePaddle/PaddleX/blob/develop/paddlex/inference/pipelines/components/common/crop_image_regions.py)
 - [roboflow/rf-detr at 1.12.0](https://github.com/roboflow/rf-detr/tree/1.12.0): [README "License"](https://github.com/roboflow/rf-detr/blob/1.12.0/README.md#license), [`LICENSE`](https://github.com/roboflow/rf-detr/blob/1.12.0/LICENSE), [`docs/exports/onnx.md`](https://github.com/roboflow/rf-detr/blob/1.12.0/docs/exports/onnx.md), [`docs/exports/basics.md`](https://github.com/roboflow/rf-detr/blob/1.12.0/docs/exports/basics.md), [`src/rfdetr/config.py`](https://github.com/roboflow/rf-detr/blob/1.12.0/src/rfdetr/config.py), [`src/rfdetr/assets/coco_classes.py`](https://github.com/roboflow/rf-detr/blob/1.12.0/src/rfdetr/assets/coco_classes.py), [`src/rfdetr/export/_runtime/decode.py`](https://github.com/roboflow/rf-detr/blob/1.12.0/src/rfdetr/export/_runtime/decode.py), [`src/rfdetr/export/prepare.py`](https://github.com/roboflow/rf-detr/blob/1.12.0/src/rfdetr/export/prepare.py)
 - [rfdetr 1.12.0 on PyPI](https://pypi.org/project/rfdetr/1.12.0/)
+
+## ADR-009 The contract in the OS contract shape: `skill` as an object, Skill-only `dependencies`
+
+2026-11-13.
+
+### Context
+
+Velisa's contract-shape check (`si contract-check`, Velisa ADR-018) validates every pinned contract against the OS schema, `registry/capability_contract.schema.json`. This contract broke it in two places:
+
+- `skill` was the package name as a string; the schema wants an object (`{id, version}`).
+- `dependencies[]` named every entry under `id` and mixed the one Skill (ffmpeg-skill) with Python packages, a binary and model files; the schema wants Skill dependencies, each with `skill_id` and `version_range`.
+
+The schema stays as it is. The compliant contracts already show the convention: transcription-skill lists only Skills in `dependencies` and leaves its provider packages and programs to `doctor` and `engines`; nle-bridge-skill and publish-skill give `skill` as `{id, package, version}`.
+
+### Decision
+
+- `skill` is `{"id": "detection", "package": "detection-skill", "version": <version>}`. `skill_id` and `id` stay.
+- `dependencies` lists ffmpeg-skill only. The entry gains `skill_id`; its `id`, `kind`, `version_range`, `tools` and `located_by` stay, so a reader of `dependencies[].id` keeps working.
+- OpenCV, PySceneDetect, ONNX Runtime, Tesseract and the model files leave `dependencies`. `doctor` already reports each one with its version or file, licence and install line (the PP-OCRv6 `download` and RF-DETR `export` commands included), and `engines` names the engines.
+
+### Consequences
+
+- `detection contract --json` passes `si contract-check` against the OS schema with no baseline entry.
+- No command, option, output document, tool, capability id or error changed. `contract_version` stays 1.0: by the OS versioning rules (Velisa docs/VERSIONING.md section 3) a bump is for capability shape, and nothing a dependent calls changed. The skill version becomes 0.2.3.
+- An orchestrator that compares `dependencies` or `skill` with a pinned copy sees a change and has to re-pin. video-production-agent does not read either field (it reads `skill_id`), and neither is in its fatal drift keys.

@@ -6,14 +6,10 @@ from typing import Any, Dict, List
 
 from . import __version__
 from .detections import DETECTIONS_SCHEMA
-from .doctor import SCENEDETECT_RANGE
 from .engines import (DEFAULT_ENGINE, DEFAULT_SHOT_ENGINE, ENGINES_BY_KIND, OBJECT_ENGINES, OPTIONAL_ENGINES, SHOT_ENGINES,
                       TEXT_ENGINES, engine_ids)
-from .engines.ppocrv6_engine import DOWNLOAD as PPOCRV6_DOWNLOAD
-from .engines.rfdetr_engine import EXPORT as RFDETR_EXPORT, RFDETR_VERSION
 from .frames import ENV_DIRS, REQUIRED_TOOLS, VERSION_RANGE
-from .models import (ENV_MODELS_DIR, ENV_TESSDATA_DIR, FACE_MODEL_DEFAULT, KNOWN_MODELS, KNOWN_TESSDATA, PPOCRV6_TIERS,
-                     RFDETR_MODEL_PREFERENCE, SHOT_MODEL_DEFAULT)
+from .models import KNOWN_MODELS, KNOWN_TESSDATA
 from .pii import CATEGORIES as PII_CATEGORIES, DEFAULT_LOCALES as PII_DEFAULT_LOCALES, PII_SCHEMA, RULES as PII_RULES
 from .rank import RANK_SCHEMA, WEIGHTS as RANK_WEIGHTS
 from .reframe import METHOD as REFRAME_METHOD, REFRAME_SCHEMA
@@ -111,11 +107,10 @@ ERRORS = {
 
 
 def contract() -> Dict[str, Any]:
-    located = ["--models-dir", f"${ENV_MODELS_DIR}"]
     return {
         "skill_id": SKILL_ID,
         "id": SKILL_ID,
-        "skill": "detection-skill",
+        "skill": {"id": SKILL_ID, "package": "detection-skill", "version": __version__},
         "version": __version__,
         "contract_version": CONTRACT_VERSION,
         "provides": [{"id": "vision.detect_faces", "lifecycle": "EXPERIMENTAL", "tool_id": "detection/faces"},
@@ -127,49 +122,16 @@ def contract() -> Dict[str, Any]:
                      {"id": "vision.active_speaker", "lifecycle": "EXPERIMENTAL", "tool_id": "detection/speakers"},
                      {"id": "vision.find_personal_data", "lifecycle": "EXPERIMENTAL", "tool_id": "detection/pii"},
                      {"id": "vision.rank_face_frames", "lifecycle": "EXPERIMENTAL", "tool_id": "detection/rank"}],
+        # Skill dependencies only (other Skills this one invokes), each with skill_id and version_range: the OS contract
+        # shape (Velisa registry/capability_contract.schema.json, ADR-018). Python packages, binaries and model files are
+        # not Skills: `doctor` reports each with its version, licence and install line, and `engines` names the engines
+        # (as transcription-skill does). docs/decisions.md ADR-009.
         "dependencies": [
-            {"id": "ffmpeg-skill", "kind": "skill", "required": True, "version_range": VERSION_RANGE,
+            {"skill_id": "ffmpeg-skill", "id": "ffmpeg-skill", "kind": "skill", "required": True, "version_range": VERSION_RANGE,
              "for": ["detection/faces", "detection/text", "detection/objects", "detection/shots"],
              "only_for": "video input (an image needs none)",
              "tools": list(REQUIRED_TOOLS), "located_by": ["--ffmpeg-skill"] + [f"${e}" for e in ENV_DIRS]
              + ["~/.claude/skills/ffmpeg-skill", "./vendor/ffmpeg-skill", "../ffmpeg-skill"]},
-            {"id": "opencv-python-headless", "kind": "python-package", "required": False,
-             "for": ["detection/faces", "detection/objects", "detection/shots"],
-             "version_range": ">=4.8", "install": "pip install 'detection-skill[faces]'"},
-            {"id": "scenedetect", "kind": "python-package", "required": False, "for": ["detection/shots"],
-             "version_range": SCENEDETECT_RANGE, "license": "BSD-3-Clause", "install": "pip install 'detection-skill[shots]'"},
-            {"id": "onnxruntime", "kind": "python-package", "required": False,
-             "for": ["detection/objects", "detection/shots --engine transnetv2", "detection/text --engine ppocrv6",
-                     "detection/objects --engine rfdetr"],
-             "version_range": ">=1.16", "install": "pip install 'detection-skill[objects]'"},
-            {"id": "tesseract", "kind": "binary", "required": False, "for": ["detection/text"], "version_range": ">=5.0 <6.0",
-             "located_by": ["$DETECTION_TESSERACT", "PATH"]},
-            {"id": FACE_MODEL_DEFAULT, "kind": "model-weights", "required": False, "for": ["detection/faces"],
-             "version_range": "any YuNet face_detection_yunet_*.onnx (sha256 recorded in every result)", "license": "MIT",
-             "located_by": located, "downloaded_at_run_time": False},
-            {"id": "yolox_*.onnx", "kind": "model-weights", "required": False, "for": ["detection/objects"],
-             "version_range": "any YOLOX COCO ONNX export (sha256 recorded in every result)", "license": "Apache-2.0",
-             "located_by": located, "downloaded_at_run_time": False},
-            {"id": SHOT_MODEL_DEFAULT, "kind": "model-weights", "required": False, "optional_engine": True,
-             "for": ["detection/shots --engine transnetv2"],
-             "version_range": "an ONNX export of TransNetV2 (sha256 recorded in every result)", "license": "MIT",
-             "located_by": located, "downloaded_at_run_time": False},
-            {"id": "PP-OCRv6_*_det.onnx + PP-OCRv6_*_rec.onnx + PP-OCRv6_*_rec.yml", "kind": "model-weights", "tiers": list(PPOCRV6_TIERS),
-             "required": False, "optional_engine": True, "for": ["detection/text --engine ppocrv6"],
-             "version_range": "the official PP-OCRv6 ONNX exports (PaddlePaddle/PP-OCRv6_<tier>_det_onnx, _rec_onnx) and the "
-                              "recognizer's inference.yml (sha256 of each recorded in every result)",
-             "license": "Apache-2.0", "located_by": located, "downloaded_at_run_time": False,
-             "get": list(PPOCRV6_DOWNLOAD)},
-            {"id": " or ".join(RFDETR_MODEL_PREFERENCE), "kind": "model-weights", "required": False, "optional_engine": True,
-             "for": ["detection/objects --engine rfdetr"],
-             "version_range": f"an ONNX export of the official RF-DETR Small / Medium COCO weights (rfdetr {RFDETR_VERSION}; "
-                              "sha256 recorded in every result)",
-             "license": "Apache-2.0", "located_by": located, "downloaded_at_run_time": False,
-             "get": list(RFDETR_EXPORT), "export_needs": "PyTorch, outside this skill and only for the one-time export"},
-            {"id": "tessdata_best jpn/jpn_vert/eng", "kind": "model-weights", "required": False, "for": ["detection/text"],
-             "version_range": "tessdata 4.0+ LSTM (tessdata_best recommended; sha256 recorded in every result)",
-             "license": "Apache-2.0", "located_by": ["--tessdata-dir", f"${ENV_TESSDATA_DIR}", "tesseract's own tessdata"],
-             "downloaded_at_run_time": False},
         ],
         "not_provided": ["face recognition or identifying anyone (a face box is never an identity)",
                          "decoding video (frames come from ffmpeg-skill look / scenes)",
