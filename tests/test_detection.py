@@ -1571,12 +1571,12 @@ class RfdetrTests(TmpCase):
         self.assertEqual(c["engines"]["by_kind"]["text"], ["tesseract", "ppocrv6"])
         self.assertEqual(c["engines"]["by_kind"]["object"], ["yolox", "rfdetr"])
         self.assertEqual(set(c["engines"]["optional"]), {"transnetv2", "ppocrv6", "rfdetr"})
-        weights = {d["id"]: d for d in c["dependencies"] if d["kind"] == "model-weights"}
-        for key in ("PP-OCRv6_*_det.onnx + PP-OCRv6_*_rec.onnx + PP-OCRv6_*_rec.yml", "rfdetr-small.onnx or rfdetr-medium.onnx"):
-            dep = weights[key]
-            self.assertEqual((dep["required"], dep["optional_engine"], dep["downloaded_at_run_time"], dep["license"]),
-                             (False, True, False, "Apache-2.0"))
-            self.assertTrue(dep["get"])
+        # model files are not Skills: doctor reports them, optional, with the commands to get them (ADR-009)
+        self.assertEqual([d["skill_id"] for d in c["dependencies"]], ["ffmpeg-skill"])
+        checks = doctor()["checks"]
+        self.assertTrue(checks["ppocrv6_models"]["optional"] and checks["ppocrv6_models"]["download"])
+        self.assertTrue(checks["rfdetr_model"]["optional"] and checks["rfdetr_model"]["export"])
+        self.assertIn("Apache-2.0", checks["ppocrv6_models"]["install"])
         tools = {t["tool_id"]: t for t in c["tools"]}
         self.assertIn("[--engine tesseract|ppocrv6]", tools["detection/text"]["argv"])
         self.assertIn("[--engine yolox|rfdetr]", tools["detection/objects"]["argv"])
@@ -1684,11 +1684,24 @@ class ContractTests(unittest.TestCase):
             self.assertIn(p["tool_id"], tool_ids)
         for d in c["dependencies"]:
             self.assertIn("version_range", d)
-        ff = next(d for d in c["dependencies"] if d["id"] == "ffmpeg-skill")
+        ff = next(d for d in c["dependencies"] if d["skill_id"] == "ffmpeg-skill")
         self.assertEqual(ff["version_range"], ">=2.0.0 <4.0.0")
+        self.assertEqual(c["skill"], {"id": "detection", "package": "detection-skill", "version": __version__})
         self.assertFalse(c["execution"]["network"])
         self.assertEqual({e["exit_code"] for e in ERRORS.values()}, {2, 3, 4})
         self.assertIn("face_detection_yunet_2026may.onnx", c["engines"]["known_model_sha256"].values())
+
+    def test_os_contract_shape(self):
+        """The OS contract shape (Velisa registry/capability_contract.schema.json, ADR-018; ADR-009 here): `skill` is an
+        object, and `dependencies` lists Skills only, each with a non-empty skill_id and version_range."""
+        c = contract()
+        self.assertIsInstance(c["skill"], dict)
+        self.assertEqual((c["skill"]["id"], c["skill"]["version"]), (c["skill_id"], c["version"]))
+        for d in c["dependencies"]:
+            self.assertEqual(d["kind"], "skill")
+            for k in ("skill_id", "version_range"):
+                self.assertIsInstance(d[k], str)
+                self.assertTrue(d[k])
 
     def test_version_comes_from_pyproject(self):
         import re
