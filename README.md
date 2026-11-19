@@ -105,6 +105,8 @@ Another file (for example `yolox_s.onnx`) still runs: its measured sha256 is rec
 | `contract --json` | Machine-readable contract in the OS registry's shape |
 | `doctor --json [--models-dir DIR] [--tessdata-dir DIR] [--ffmpeg-skill DIR]` | Python, ffmpeg-skill, OpenCV, ONNX Runtime, the model files, Tesseract and its languages; `MISSING` entries carry install lines |
 
+`contract/contract.json` is the contract committed as a file (`detection contract --json` as one line with sorted keys, compact separators and a final newline), so the contract of any commit or tag is `git show <ref>:contract/contract.json`, with nothing installed or run. Regenerate it with `python contract/generate.py`; a unit test fails when it is stale.
+
 Common options: `--max-frames 2000` (refuses a bigger sampling plan), `--timeout 3600` (seconds for the engine; the worker process group is killed past it), `--ffmpeg-skill DIR`, `--overwrite`, `--json`. A video without a sampling option is sampled once a second. Every command prints one JSON document with `--json`. Exit codes: 0 ok, 2 invalid input or arguments, 3 engine / model file / tessdata / ffmpeg-skill missing, 4 the engine or frame extraction failed or timed out. Outputs never overwrite an existing file without `--overwrite`, and `-o` equal to an input is refused.
 
 ## How it works
