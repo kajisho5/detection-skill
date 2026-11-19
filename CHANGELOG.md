@@ -1,5 +1,32 @@
 # Changelog
 
+## v0.2.3 - 2026-11-19
+
+- ci: release on push to main (version from PR labels, tag and GitHub Release) (#23) (5004f86)
+- ci: call Velisa's contract-diff on contract changes, one run per pull request (#22) (b203183)
+- ci: commit the contract as contract/contract.json (#21) (b8a3c05)
+- Contract in the OS contract shape: skill object, Skill-only dependencies (0.2.3) (#20) (43cc556)
+- docs(roadmap): tick step 14, shots and text wired in the agent (#19) (6259e4e)
+- docs(roadmap): add the ownership decisions of 2026-11-12 (#18) (9455f6e)
+- Real-model results from heavy-tests; review follow-ups (0.2.2) (#17) (9e2f732)
+- Real-model tests in a manual heavy-tests workflow; doc fixes from #15 (0.2.1) (#16) (d8862bf)
+- Optional PP-OCRv6 (text) and RF-DETR S/M (objects) engines (roadmap step 13) (#15) (0ff0be3)
+- Face attributes for frame choice (roadmap step 12) (#14) (c46c91a)
+- Personal and patient data in slides and frames (roadmap step 11) (#13) (4d3b94e)
+- Active speaker for multicam switching (roadmap step 10) (#12) (ea64bdf)
+- Shots op and subject path for reframing (roadmap steps 8, 9) (#11) (34ba44a)
+- docs(roadmap): field review steps 10-12 (2026-11-05) (#10) (dfc1a75)
+- docs(roadmap): steps 8 (shots) and 9 (subject path for reframing) (#9) (97731a2)
+- Roadmap step 7: agent side landed (video-production-agent#104) (#8) (54abae8)
+- Accept ffmpeg-skill 3.x (>=2.0.0 <4.0.0); CI on v2.24.1 and v3.0.0 (#7) (0ec4e64)
+- Roadmap step 7: record the skill side (SKILL.md, CI) as done; CI checks out the OS as kajisho5/Velisa (#6) (af26fc3)
+- deps: raise the opencv-python-headless floor and give numpy one (supply-chain audit) (#5) (73466e1)
+- feat: detection-skill 0.1.0 (faces, text, objects) (#4) (b57ef84)
+- docs: ADR-001 engines per task (#3) (305c105)
+- docs: add app icon and wordmark (made with fresnel) (#2) (a685797)
+- Add ECOSYSTEM_ROADMAP.md: gaps, wiring and PR-sized steps from the 2026-10-30 ecosystem audit (#1) (48b373f)
+- Initial commit (565b525)
+
 ## 0.2.3 - 2026-11-13
 
 Contract shape only; no command, option, output document, tool, capability id or default changed. `contract_version` stays 1.0.
