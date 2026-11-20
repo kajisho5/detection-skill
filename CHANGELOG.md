@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.7 - 2026-11-20
+
+- fix: accept ffmpeg-skill 4.x (>=2.0.0 <5.0.0) (#30) (25bfcae)
+
 ## 0.2.6 - 2026-11-20
 
 - fix(frames): exact frame rates and frame counts by velisa/timebase@1 (#28) (#29) (276b31b)
