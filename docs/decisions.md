@@ -344,3 +344,28 @@ Today's release commits wrote CHANGELOG.md headings as `## vX.Y.Z - date`. Every
 
 - A version bumped by hand in a pull request is released whatever its labels.
 - A release that fails the tests is not made; a later push retries.
+
+## ADR-012 Exact frame rates and frame counts (velisa/timebase@1)
+
+2026-11-20. The ecosystem rule is Velisa ADR-026 (decision D40, spec `velisa/timebase@1`, rule TB-1). Issue #28.
+
+### Context
+
+`frames.py` kept rates and frame counts as floats. `_rate` turned `r_frame_rate` into a float. `frame_count` was `floor(duration * rate + 1e-6)`, and `seek_time` floored `frame / rate` to the millisecond with another `1e-6` guard. The guards stood in for exact arithmetic. When there was no `r_frame_rate`, the rate fell back to the probe's 3-decimal `fps`, so 29.97 stayed 29.97 rather than 30000/1001.
+
+### Decision
+
+- `frames.exact_rate` reads a rate as an exact `Fraction` by TB-2:
+  - an `N/D` value (ffprobe's `r_frame_rate`) is taken as written;
+  - a decimal that is not an integer and lies within 0.005 of base x 1000/1001 (base 24, 30, 48, 60, 120 or 240) is that NTSC rate;
+  - any other decimal is its exact value.
+- `probe_video` adds `rate_exact` beside the float `frame_rate`. The fallback to the probe's `fps` reads 29.97 as 30000/1001.
+- `frame_count` counts without `nb_frames` by TB-4's `down` rule: `floor((duration + 1 ms) x rate)` on fractions. A measured length just short of its last frame keeps that frame, and a part frame is dropped.
+- `seek_time` is `floor_ms(k / rate)` on the exact rate. Its result is the one TB-3 asks for (0.033 and 0.066 at 29.97), with no float guard.
+- `tests/fixtures/timebase/timebase-vectors.json` is a byte-for-byte copy of Velisa's `docs/specs/timebase-vectors.json` at Velisa commit `b7df1d82586f0b7c00fed4074aecac75cbadf893`. `.gitattributes` keeps the file LF on Windows. `tests/test_timebase_vectors.py` checks its sha256 and runs the 43 vectors of what this skill has: rates, the same rate, `down` frame counts, and millisecond seeks. It counts the other vectors.
+
+### Consequences
+
+- The contract and the output shapes are unchanged.
+- `frames.frame_rate` and `source.fps` read `29.97003` instead of `29.97` only when the probe gives no `r_frame_rate`.
+- A frame count without `nb_frames` gains the last frame when the duration is less than 1 ms short of it.
