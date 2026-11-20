@@ -89,7 +89,7 @@ def detect_shots(media: str, *, engine_id: Optional[str] = None, threshold: Opti
         params["min_shot_frames"] = int(min_shot_frames)
     run_dir = tempfile.mkdtemp(prefix="detection-shots-")
     try:
-        times = [seek_time(k, rate) for k in range(n)]
+        times = [seek_time(k, facts.get("rate_exact") or rate) for k in range(n)]
         frames = extract_frames(skill, media, times, out_w, run_dir, runner=runner, timeout=timeout)
         ereq = EngineRequest(frames=frames, model_path=prepared.model_path, params=params)
         t_engine = time.time()

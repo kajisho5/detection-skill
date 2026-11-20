@@ -13,9 +13,11 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import subprocess
 import sys
 from dataclasses import dataclass
+from fractions import Fraction
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .errors import DetectionError
@@ -176,22 +178,54 @@ def probe_video(skill: FfmpegSkill, video: str, *, runner: Runner = subprocess_r
         fps = None
     nb = v.get("nb_frames")
     vdur = v.get("duration")
-    return {"duration": duration, "width": w, "height": h, "fps": fps, "frame_rate": _rate(v.get("r_frame_rate")) or fps,
+    exact = exact_rate(v.get("r_frame_rate"))
+    if exact is None and fps:
+        exact = exact_rate(v.get("fps"))   # probe's 3-decimal fps read by TB-2: 29.97 is 30000/1001
+    return {"duration": duration, "width": w, "height": h, "fps": fps, "frame_rate": float(exact) if exact else fps,
+            "rate_exact": exact,
             "nb_frames": int(nb) if isinstance(nb, (int, float)) and not isinstance(nb, bool) and nb > 0 else None,
             "video_duration": float(vdur) if isinstance(vdur, (int, float)) and not isinstance(vdur, bool) and vdur > 0 else None,
             "variable_frame_rate": bool(v.get("variable_frame_rate_suspected"))}
 
 
-def _rate(value: Any) -> Optional[float]:
-    """'30000/1001' -> 29.97002997...: the exact frame rate (probe's `fps` is rounded)."""
-    if not isinstance(value, str) or "/" not in value:
+# velisa/timebase@1 (Velisa ADR-026; docs/decisions.md ADR-012): rates are exact fractions, frames are counted on them.
+NTSC_BASES = (24, 30, 48, 60, 120, 240)
+_DECIMAL = re.compile(r"^\+?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?$")
+_RATIONAL = re.compile(r"^\s*(\d+)\s*/\s*(\d+)\s*$")
+
+
+def exact_rate(value: Any) -> Optional[Fraction]:
+    """A frame rate as an exact fraction, or None (TB-2). 'N/D' (ffprobe's r_frame_rate, or a Fraction) is taken as
+    written; a decimal that is not an integer and lies within 0.005 of base x 1000/1001 (base 24, 30, 48, 60, 120,
+    240) is that NTSC rate; any other decimal is its exact value; a float is read through its shortest text."""
+    if isinstance(value, bool) or value is None:
         return None
-    num, _, den = value.partition("/")
-    try:
-        r = float(num) / float(den)
-    except (ValueError, ZeroDivisionError):
-        return None
-    return r if math.isfinite(r) and 0 < r <= 1000 else None
+    if isinstance(value, Fraction):
+        r = value
+    elif isinstance(value, int):
+        r = Fraction(value)
+    else:
+        if isinstance(value, float):
+            if not math.isfinite(value):
+                return None
+            text = repr(value)
+        elif isinstance(value, str):
+            text = value.strip()
+        else:
+            return None
+        m = _RATIONAL.match(text)
+        if m:
+            if int(m.group(2)) == 0:
+                return None
+            r = Fraction(int(m.group(1)), int(m.group(2)))
+        elif _DECIMAL.match(text):
+            r = Fraction(text)
+            if r.denominator != 1:
+                r = next((Fraction(b * 1000, 1001) for b in NTSC_BASES if abs(r - Fraction(b * 1000, 1001)) <= Fraction(5, 1000)), r)
+        else:
+            return None
+    return r if 0 < r <= 1000 else None
+
 
 
 def last_time(duration: float, fps: Optional[float]) -> float:
@@ -274,18 +308,23 @@ def extract_frames(skill: FfmpegSkill, video: str, times: List[float], width: in
 
 # ---- every frame (shots) ------------------------------------------------------------------------------
 def frame_count(facts: Dict[str, Any]) -> int:
-    """Number of frames: the stream's nb_frames when probe reports it, else floor(duration x frame rate)."""
+    """Number of frames: the stream's nb_frames when probe reports it, else the whole frames of the duration at the
+    exact rate, TB-4's `down`: floor((duration + 1 ms) x rate), on fractions (a duration written to the millisecond
+    or the microsecond that falls just short of its last frame keeps it)."""
     if facts.get("nb_frames"):
         return int(facts["nb_frames"])
-    rate = facts.get("frame_rate") or facts.get("fps")
+    rate = exact_rate(facts.get("rate_exact") or facts.get("frame_rate") or facts.get("fps"))
     if not rate:
         raise DetectionError("UNSUPPORTED_MEDIA", "frame rate unknown (ffmpeg-skill probe): shots need every frame")
     duration = facts.get("video_duration") or facts["duration"]
-    return max(1, int(math.floor(duration * rate + 1e-6)))
+    return max(1, math.floor((Fraction(repr(float(duration))) + Fraction(1, 1000)) * rate))
 
 
-def seek_time(frame: int, rate: float) -> float:
+def seek_time(frame: int, rate: Any) -> float:
     """The `look --at` time that returns frame `frame` (0-based): its presentation time rounded DOWN to the
     millisecond. `look` seeks with `-ss T` before the input, which returns the first frame whose time is >= T, so
     T must not be rounded up past the frame (measured on 25 and 29.97 fps H.264, ffmpeg 6.1)."""
-    return math.floor(frame / float(rate) * 1000.0 + 1e-6) / 1000.0
+    r = exact_rate(rate)
+    if r is None:
+        raise DetectionError("UNSUPPORTED_MEDIA", f"frame rate {rate!r} is not a frame rate")
+    return float(Fraction(math.floor(Fraction(frame) * 1000 / r), 1000))   # exact: no float guard needed (TB-3)
