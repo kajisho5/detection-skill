@@ -81,7 +81,7 @@ def doctor(models_dir: Optional[str] = None, tessdata: Optional[str] = None, ffm
                                   "tools": ed.get("tools"), "used_for": "frames of a video (probe, scenes, look)",
                                   "install": None if status == "OK" else
                                   (f"ffmpeg-skill {skill.version} needs Python {floor}+: run under Python 3.10+, or use ffmpeg-skill 2.x"
-                                   if floor else "ffmpeg-skill 2.x or 3.x with a working ffmpeg (run its `python3 scripts/_contract.py doctor`)")}
+                                   if floor else "ffmpeg-skill 2.x, 3.x or 4.x with a working ffmpeg (run its `python3 scripts/_contract.py doctor`)")}
 
     cv2 = _pkg("cv2", "opencv-python-headless")
     checks["opencv"] = dict(cv2, used_for="faces (YuNet), image decoding for objects",

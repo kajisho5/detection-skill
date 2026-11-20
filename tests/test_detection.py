@@ -335,21 +335,27 @@ class ServiceTests(TmpCase):
         with self.assertRaises(DetectionError) as cm:
             detect("face", video, engine=ScriptedEngine("face"), ffmpeg_skill=os.path.join(self.tmp, "nope"))
         self.assertEqual((cm.exception.code, ERRORS[cm.exception.code]["exit_code"]), ("FFMPEG_SKILL_NOT_FOUND", 3))
-        for major in ("1", "4"):
+        for major in ("1", "5"):
             other = os.path.join(self.tmp, f"ffmpeg-skill-{major}")
             shutil.copytree(FAKE_FFMPEG_SKILL, other)
             Path(other, "package.json").write_text(f'{{"version": "{major}.0.0"}}', encoding="utf-8")
             with self.assertRaises(DetectionError) as cm:
                 detect("face", video, engine=ScriptedEngine("face"), ffmpeg_skill=other)
             self.assertEqual(cm.exception.code, "FFMPEG_SKILL_NOT_FOUND")
-            self.assertIn(">=2.0.0 <4.0.0", cm.exception.message)
+            self.assertIn(">=2.0.0 <5.0.0", cm.exception.message)
             self.assertEqual(doctor(ffmpeg_skill=other)["checks"]["ffmpeg_skill"]["status"], "INCOMPATIBLE")
 
     def test_ffmpeg_skill_3x_is_accepted_and_needs_python_3_10(self):
+        self._check_python_3_10_major("3.0.0")
+
+    def test_ffmpeg_skill_4x_is_accepted_and_needs_python_3_10(self):
+        self._check_python_3_10_major("4.0.0")
+
+    def _check_python_3_10_major(self, version):
         video = fake_video(self.tmp)
-        v3 = os.path.join(self.tmp, "ffmpeg-skill-3")
+        v3 = os.path.join(self.tmp, f"ffmpeg-skill-{version}")
         shutil.copytree(FAKE_FFMPEG_SKILL, v3)
-        Path(v3, "package.json").write_text('{"version": "3.0.0"}', encoding="utf-8")
+        Path(v3, "package.json").write_text(f'{{"version": "{version}"}}', encoding="utf-8")
         skill = frames.locate(v3)
         self.assertIsNone(frames.python_floor(skill, (3, 10)))
         self.assertIsNone(frames.python_floor(skill, (3, 12, 1)))
@@ -357,7 +363,7 @@ class ServiceTests(TmpCase):
         self.assertIsNone(frames.python_floor(frames.locate(FAKE_FFMPEG_SKILL), (3, 9)))  # 2.x keeps Python 3.9
         if sys.version_info >= (3, 10):
             doc = detect("face", video, engine=ScriptedEngine("face"), ffmpeg_skill=v3)
-            self.assertEqual(doc["sampling"]["ffmpeg_skill_version"], "3.0.0")
+            self.assertEqual(doc["sampling"]["ffmpeg_skill_version"], version)
             self.assertTrue(validate_detections(doc).ok)
             self.assertEqual(doctor(ffmpeg_skill=v3)["checks"]["ffmpeg_skill"]["status"], "OK")
         else:
@@ -1685,7 +1691,7 @@ class ContractTests(unittest.TestCase):
         for d in c["dependencies"]:
             self.assertIn("version_range", d)
         ff = next(d for d in c["dependencies"] if d["skill_id"] == "ffmpeg-skill")
-        self.assertEqual(ff["version_range"], ">=2.0.0 <4.0.0")
+        self.assertEqual(ff["version_range"], ">=2.0.0 <5.0.0")
         self.assertEqual(c["skill"], {"id": "detection", "package": "detection-skill", "version": __version__})
         self.assertFalse(c["execution"]["network"])
         self.assertEqual({e["exit_code"] for e in ERRORS.values()}, {2, 3, 4})
@@ -1773,7 +1779,7 @@ class RealFramesTests(TmpCase):
         self.assertEqual(doc["frames"][0]["detections"][0]["box"], [1870.0, 1030.0, 50.0, 50.0])  # clipped at the edge
         real_version = json.loads(Path(FFMPEG_SKILL_DIR, "package.json").read_text(encoding="utf-8"))["version"]
         self.assertEqual(doc["sampling"]["ffmpeg_skill_version"], real_version)
-        self.assertIn(real_version.split(".")[0], ("2", "3"))
+        self.assertIn(real_version.split(".")[0], ("2", "3", "4"))
         self.assertTrue(validate_detections(doc).ok)
         doc = detect("face", video, scenes=True, engine=eng, ffmpeg_skill=str(FFMPEG_SKILL_DIR))
         self.assertEqual(doc["sampling"]["method"], "scenes")
