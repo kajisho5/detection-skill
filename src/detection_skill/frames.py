@@ -24,11 +24,11 @@ from .errors import DetectionError
 
 ENV_DIRS = ("DETECTION_FFMPEG_SKILL_DIR", "FFMPEG_SKILL_DIR")
 REQUIRED_TOOLS = ("probe", "look", "scenes")
-SUPPORTED_MAJORS = (2, 3)
-VERSION_RANGE = ">=2.0.0 <4.0.0"
-# ffmpeg-skill 3.0.0 dropped Python 3.9: its scripts run under this interpreter (sys.executable), so a 3.x
-# checkout needs Python 3.10+ here too. On Python 3.9, use an ffmpeg-skill 2.x checkout (ADR-002).
-PYTHON_FLOOR_BY_MAJOR = {3: (3, 10)}
+SUPPORTED_MAJORS = (2, 3, 4)
+VERSION_RANGE = ">=2.0.0 <5.0.0"
+# ffmpeg-skill 3.0.0 dropped Python 3.9 (4.x keeps 3.10+): its scripts run under this interpreter (sys.executable),
+# so a 3.x or 4.x checkout needs Python 3.10+ here too. On Python 3.9, use an ffmpeg-skill 2.x checkout (ADR-002, ADR-013).
+PYTHON_FLOOR_BY_MAJOR = {3: (3, 10), 4: (3, 10)}
 IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp")
 LOOK_BATCH = 40
 TIME_DIGITS = 3

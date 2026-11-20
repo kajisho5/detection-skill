@@ -369,3 +369,23 @@ Today's release commits wrote CHANGELOG.md headings as `## vX.Y.Z - date`. Every
 - The contract and the output shapes are unchanged.
 - `frames.frame_rate` and `source.fps` read `29.97003` instead of `29.97` only when the probe gives no `r_frame_rate`.
 - A frame count without `nb_frames` gains the last frame when the duration is less than 1 ms short of it.
+
+## ADR-013 ffmpeg-skill 4.x accepted (`>=2.0.0 <5.0.0`)
+
+2026-11-20. Checked against ffmpeg-skill v4.0.0 (CHANGELOG "4.0.0", the 3.15.1 to 4.0.0 contract diff).
+
+### Context
+
+ffmpeg-skill 4.0.0 keeps `contract_version` 2.0 and removes no tool or flag. Its breaking changes are in `export` (platform presets normalise loudness by default; an unmet required field exits 1 with `kind: verification`), `fit` (`--method` required beyond 1.15x), `join --copy` (AAC drift over 50 ms refused), `waveform` (audio re-encode now conditional), and `caption` / `silence --transcribe` (`english_only`). This skill calls only `probe`, `scenes` and `look --at --no-timecode --width`; none of them changed. 4.0 also splits the stability promise per tool: `probe` and `look` are `stable`, `scenes` is `beta` (a flag or key may change in a 4.x minor after one minor in `deprecated`). Python 3.10+ and FFmpeg 6.1+ are unchanged from 3.x.
+
+### Decision
+
+- **Range `>=2.0.0 <5.0.0`**, `frames.SUPPORTED_MAJORS = (2, 3, 4)`. No code path changes: no 4.0-only flag is passed and no 3.x behaviour is relied on that 4.0 changed.
+- **Python floor.** `PYTHON_FLOOR_BY_MAJOR` gains `4: (3, 10)`, so a 4.x checkout on Python 3.9 is refused exactly like a 3.x one (ADR-002).
+- **CI.** The integration job (every real engine, no skips) adds the `v4.0.0` leg next to `v2.24.1` and `v3.0.0`.
+- **`scenes` is `beta` in 4.x.** It feeds the candidate frames only (the default shot engine is PySceneDetect, ADR-003); a change would show in the `v4.0.0` integration leg once a later 4.x tag is added there.
+
+### Consequences
+
+- The contract's `dependencies[ffmpeg-skill].version_range` changes, so an orchestrator that pins this contract byte for byte has to re-pin. No command, option, output document or `contract_version` changed.
+- Measured on FFmpeg 6.1.1 / Python 3.11: the unit and integration tests pass against `git archive` of v3.15.1 and v4.0.0, and the faces document of the same video is identical between the two.
